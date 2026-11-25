@@ -142,6 +142,19 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(parse_window("garbage"), (None, None))
 
 
+class CliErrorTest(unittest.TestCase):
+    def test_an_unreadable_library_is_one_line_and_a_bad_status(self):
+        import contextlib
+        import io
+        from batonpass.cli import main
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = main(["stats", "--db", "/nonexistent/batonpass/x.db"])
+        self.assertEqual(rc, 2)
+        self.assertTrue(err.getvalue().startswith("batonpass: "), err.getvalue())
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
+
+
 class LibraryTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

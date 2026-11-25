@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 
 from . import __version__
@@ -446,4 +447,16 @@ def main(argv=None):
     if not getattr(args, "func", None):
         parser.print_help()
         return 2
-    return args.func(args) or 0
+    try:
+        return args.func(args) or 0
+    except BrokenPipeError:
+        # `batonpass export … | head` is a normal thing to do.
+        try:
+            sys.stdout.close()
+        finally:
+            return 0
+    except (RuntimeError, OSError, sqlite3.OperationalError) as e:
+        # A missing optional dependency, an unreadable disk and a half-written
+        # library are all one-liners to a human, not a stack trace to read.
+        print("batonpass: %s" % e, file=sys.stderr)
+        return 2
