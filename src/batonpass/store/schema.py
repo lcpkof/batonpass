@@ -1,13 +1,19 @@
-"""Schema, version 1.
+"""Schema, version 2.
 
 raw_*   append-only compressed source payloads — the parser's undo button.
 content content-addressed plaintext, refcounted.
 session/message/part   the canonical model, rebuildable from raw at any time.
+sync_state             local bookkeeping: how far this library has pushed/pulled.
+session_head           the summary layer, so a new machine is useful before it
+                       has a single message row.
+
+1 → 2 is additive: two new tables, no column changed, so the DDL alone upgrades
+an existing library and no migration pass is needed.
 """
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = [
     """
@@ -118,4 +124,29 @@ DDL = [
     )
     """,
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+
+    # How far this library has pushed to / pulled from each channel. Local
+    # bookkeeping only — never itself synced, because it describes *this*
+    # machine's progress, not the data.
+    """
+    CREATE TABLE IF NOT EXISTS sync_state (
+      channel TEXT NOT NULL,
+      key     TEXT NOT NULL,
+      value   TEXT,
+      PRIMARY KEY (channel, key)
+    )
+    """,
+
+    # The summary layer, stored apart from `session` so that tier-1 can be
+    # pulled and read without touching a single message row.
+    """
+    CREATE TABLE IF NOT EXISTS session_head (
+      sid         TEXT PRIMARY KEY,
+      device      TEXT,
+      one_line    TEXT,
+      head_json   TEXT,
+      msg_total   INTEGER DEFAULT 0,
+      updated_at  TEXT
+    )
+    """,
 ]

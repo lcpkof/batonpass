@@ -100,33 +100,54 @@ batonpass doctor
 
 ### 选一个"通道"
 
-通道就是一个**你两台机器都能读写的目录**。四种随便挑一个：
+通道就是一个**你两台机器都能读写的目录**。随便挑一个：
 
 | 通道 | 怎么建 | 耗时 | 适合 |
 |---|---|---|---|
-| **git 私有仓库**（推荐） | `batonpass channel init --git git@github.com:me/batonpass-data.git` | 30 s | 有 GitHub、想有版本历史 |
-| **网盘目录** | `batonpass channel init --dir ~/Nutstore/batonpass` | 10 s | 有坚果云/OneDrive/iCloud |
-| **U 盘** | `batonpass channel init --dir /Volumes/USB/batonpass` | 5 s | 物理隔离、极度敏感 |
-| **tailnet 路径** | `batonpass channel init --dir /Volumes/peer/batonpass` | 30 s | 已有 Tailscale |
+| **网盘目录**（最省事） | `batonpass sync init ~/Nutstore/batonpass` | 10 s | 有坚果云/OneDrive/iCloud |
+| **git 私有仓库** | `git init ~/baton-data` 后 `batonpass sync init ~/baton-data`，再 `git push` | 30 s | 想要版本历史 |
+| **U 盘** | `batonpass sync init /Volumes/USB/batonpass` | 5 s | 物理隔离、极度敏感 |
+| **tailnet 路径** | `batonpass sync init /Volumes/peer/batonpass` | 30 s | 已有 Tailscale |
 
-然后在**第二台机器**上：
+通道里没有任何服务要跑，也没有进程要活着——就是一个文件夹。
+
+### 第一台机器
 
 ```bash
-batonpass channel join --dir <同一个通道>
-batonpass sync            # 拉 T0+T1（约 2 MB，1–2 秒）
-batonpass resume "xueji 岗位表"   # 立刻看到：哪天、哪台机器、做到哪、产出什么
+batonpass archive                                   # 先有库
+batonpass sync init ~/Nutstore/batonpass            # 建通道（幂等，重复跑没事）
+batonpass sync push ~/Nutstore/batonpass --tier 1   # 推目录 + 摘要，约 2.8 MB
 ```
+
+### 第二台机器
+
+```bash
+batonpass sync pull ~/Nutstore/batonpass --tier 0   # 目录，0.04 s，713 个会话
+batonpass sync pull ~/Nutstore/batonpass --tier 1   # 摘要，0.05 s
+```
+
+到这一步，第二台机器上**一条消息都还没有**，但你已经能回答"那件事是在哪台机器、哪个会话里做的、第一句问的是什么"。
+
+真要接着干了，再深拉那一个任务：
+
+```bash
+batonpass sync pull ~/Nutstore/batonpass --tier 2 --sid 5d49fc52
+batonpass export 5d49fc52 --text                    # 完整对话，逐字节一致
+```
+
+实测：64 条消息 + 256 个工具调用 + 317 个 blob，0.14 秒；64/64 消息哈希完全一致，正文 0 处差异。
 
 ### 同步的节奏
 
-| 触发 | 行为 |
-|---|---|
-| 每 15 分钟（可选定时器） | 增量 delta，KB 级 |
-| 会话启动时（MCP hook） | 按 `cwd` 自动召回任务卡 |
-| `batonpass sync --deep <sid>` | 拉某个任务的 T2/T3 |
-| `batonpass sync --full` | 拉 T4 原始附件（按需，别常开） |
+| 触发 | 命令 | 成本 |
+|---|---|---|
+| 每天一次 / 收工前 | `batonpass sync push <通道> --tier 1` | 2 MB 级，2 秒 |
+| 换机器前 | `batonpass sync push <通道> --tier 1` | 同上 |
+| 到新机器 | `batonpass sync pull <通道> --tier 1` | 0.1 秒 |
+| 要接手某个任务 | `batonpass sync pull <通道> --tier 2 --sid <前缀>` | 每任务百 KB 级 |
 
-**成本**：磁盘 +0（通道里放的是压缩后的 delta，和你本地库差不多大）；网络每次同步 KB–MB 级；定时器一次 <1 s。
+**成本**：通道 2.8 MB（713 个会话的目录 + 摘要）；本地库不变；没有常驻进程。
+已推过的会话不会重推，除非它长了新消息、摘要算法升级、或者你提高了 tier。
 
 ### 两台机器同时干同一件事会怎样
 

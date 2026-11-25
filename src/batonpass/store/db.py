@@ -26,7 +26,12 @@ def connect(path=None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     for stmt in DDL:
         conn.execute(stmt)
-    if get_meta(conn, "schema_version") is None:
+    stored = get_meta(conn, "schema_version")
+    if stored is None:
+        set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+    elif stored.isdigit() and int(stored) < SCHEMA_VERSION:
+        # Every upgrade so far has been additive, and the DDL above has just
+        # run with IF NOT EXISTS — so the library is already at this version.
         set_meta(conn, "schema_version", str(SCHEMA_VERSION))
     conn.commit()
     return conn

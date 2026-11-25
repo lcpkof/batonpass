@@ -99,6 +99,85 @@ def cmd_stats(args):
     return 0
 
 
+def cmd_sync(args):
+    from .store.db import connect, db_path
+    from .sync import init_channel, pull, push, status
+    from .sync.channel import device_name
+
+    action = args.action
+    channel = args.channel
+
+    if action == "init":
+        info = init_channel(channel, device=args.device or device_name())
+        print("channel  %s" % info["path"])
+        print("device   %s" % (args.device or device_name()))
+        print("\nnothing left to do — `batonpass sync push %s` fills it" % channel)
+        return 0
+
+    if action == "status":
+        conn = connect(args.db)
+        st = status(channel, conn)
+        if args.json:
+            print(json.dumps(st, ensure_ascii=False, indent=2, default=str))
+            return 0
+        print("channel %s" % st["channel"])
+        if not st["exists"]:
+            print("  (no channel here yet — run `batonpass sync init %s`)" % channel)
+            return 1
+        print("\ndevices")
+        for d in st["devices"]:
+            print("  %-16s last seen %s  pushes %s" % (
+                d.get("device"), d.get("last_seen"), d.get("pushes")))
+        print("\nstreams")
+        for s in st["streams"]:
+            pct = 100.0 if not s["bytes"] else (100.0 * (s["read"] or 0) / s["bytes"])
+            print("  %-16s %s %8s  read %5.1f%%  pending %s" % (
+                s["device"], s["tier"], _fmt_bytes(s["bytes"]), pct,
+                _fmt_bytes(s["pending"])))
+        if st["offsets"]:
+            print("\nlocal library has read %d stream(s) up to a stored offset"
+                  % len(st["offsets"]))
+        return 0
+
+    conn = connect(args.db or str(db_path()))
+    if action == "push":
+        st = push(channel, tier=args.tier, device=args.device, conn=conn,
+                  sid_prefix=args.sid)
+        if args.json:
+            print(json.dumps(st, ensure_ascii=False, indent=2, default=str))
+            return 0 if not st["errors"] else 1
+        print("pushed to %s as %s (tier %d)" % (st["channel"], st["device"], st["tier"]))
+        print("  %d sessions · %d re-sent · %d up to date" % (
+            st["sessions"], st["sessions_sent"], st["skipped"]))
+        if st["lines"][1] or st["lines"][0]:
+            print("  lines: t0 %d, t1 %d, t2 %d" % (
+                st["lines"][0], st["lines"][1], st["lines"][2]))
+        if st["tier"] >= 2:
+            print("  %d messages, %d parts" % (st["messages"], st["parts"]))
+        print("  blobs: %d new, %s" % (st["blobs_new"], _fmt_bytes(st["blob_bytes"])))
+        for e in st["errors"]:
+            print("  ERROR %s" % e)
+        return 0 if not st["errors"] else 1
+
+    st = pull(channel, tier=args.tier, device=args.device, conn=conn, sid_prefix=args.sid)
+    if args.json:
+        print(json.dumps(st, ensure_ascii=False, indent=2, default=str))
+        return 0
+    print("pulled from %s (up to tier %d)" % (st["channel"], st["tier"]))
+    print("  devices seen: %s" % (", ".join(st["devices"]) or "none"))
+    print("  %d sessions seen · %d new · %d summaries" % (
+        st["sessions_seen"], st["sessions_new"], st["heads"]))
+    if st["tier"] >= 2:
+        print("  %d new messages · %d new parts · %d blobs materialised" % (
+            st["messages_new"], st["parts_new"], st["blobs_new"]))
+    if st["bad_lines"]:
+        print("  %d unreadable line(s) skipped" % st["bad_lines"])
+    if st["missing"]:
+        print("  %d blob(s) referenced but absent — re-run pull with --tier 2"
+              % len(st["missing"]))
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="batonpass",
@@ -133,6 +212,30 @@ def build_parser():
     s.add_argument("--db", default=None)
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_stats)
+
+    y = sub.add_parser("sync", help="exchange history with your other machines")
+    ysub = y.add_subparsers(dest="action")
+    for name, hlp in (("init", "create a channel folder"),
+                      ("status", "who is in the channel, what is unread")):
+        q = ysub.add_parser(name, help=hlp)
+        q.add_argument("channel")
+        q.add_argument("--device", default=None)
+        q.add_argument("--db", default=None)
+        q.add_argument("--json", action="store_true")
+        q.set_defaults(func=cmd_sync)
+    for name, hlp in (("push", "write this machine's history into the channel"),
+                      ("pull", "read the channel into this machine's library")):
+        q = ysub.add_parser(name, help=hlp)
+        q.add_argument("channel")
+        q.add_argument("--tier", type=int, default=1 if name == "push" else 0,
+                       choices=[0, 1, 2],
+                       help="0 catalog, 1 summaries, 2 full messages")
+        q.add_argument("--sid", default=None, help="only this session prefix")
+        q.add_argument("--device", default=None)
+        q.add_argument("--db", default=None)
+        q.add_argument("--json", action="store_true")
+        q.set_defaults(func=cmd_sync)
+    y.set_defaults(func=None)
     return p
 
 

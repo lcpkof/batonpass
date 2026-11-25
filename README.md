@@ -13,11 +13,13 @@ join" — and you spend 20 minutes re-deriving what you already knew.
 last-week-you to today-you**, without the work touching the ground.
 
 ```
-batonpass discover              # what AI history is on this machine?  (read-only, 2 s)
-batonpass archive               # pull it into a portable library  (~1 min per GB)
-batonpass export <session> --text   # read one conversation back out
-batonpass find "岗位表" --at 7d      # search it, with time windows   (next)
-batonpass resume                # handover packet for a fresh machine (next)
+batonpass discover                     # what AI history is on this machine?  (read-only, 2 s)
+batonpass archive                      # pull it into a portable library  (~1 min per GB)
+batonpass export <session> --text      # read one conversation back out
+batonpass sync push ~/Dropbox/baton    # one file per machine, summaries only (~2 MB)
+batonpass sync pull ~/Dropbox/baton    # on the other machine: 713 sessions, zero messages
+batonpass find "岗位表" --at 7d           # search it, with time windows        (next)
+batonpass resume                       # handover packet for a fresh machine  (next)
 ```
 
 ---
@@ -111,7 +113,8 @@ picking one silently and losing the other.
 |---|---|
 | `discover` | **shipped** — read-only inventory, ~2 s, one HTML page |
 | `archive` | **shipped** — five adapters, replay-safe (re-run adds 0 rows) |
-| `find` · `resume` · `sync` | designed in [`docs/design-v1.md`](docs/design-v1.md), landing next |
+| `sync` | **shipped** — append-only channel, tiered push/pull, replay-safe both ways |
+| `find` · `resume` | designed in [`docs/design-v1.md`](docs/design-v1.md), landing next |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 
@@ -127,6 +130,28 @@ messages — and parts match once you account for the 72,184 `step-start` /
 `step-finish` rows it skips *by name*. A message with no prose (a tool call, a
 reasoning block) becomes a structured part instead of being thrown away. Nothing is
 dropped silently; anything unaudited is reported as a number you can argue with.
+
+`sync`, measured the same way — a real 713-session library, a channel folder, and a
+second library that has never seen any of those apps:
+
+```
+library 528 MB              →   channel 2.8 MB      push 713 sessions in 2.0 s
+                                   t0 catalog   356 KB
+                                   t1 summaries 2.43 MB
+fresh machine reads t0        0.04 s   → 713 sessions, 0 messages
+              then t1         0.05 s   → every session has a first ask and its last rounds
+deep-pull one task            0.14 s   → 64 messages, 256 parts, 317 blobs
+verify: 64/64 message hashes identical, 0 bodies differ
+```
+
+A channel is just a folder — a shared volume, a synced directory, a git remote, a USB
+stick. Each machine appends only to *its own* file, so there is no lock, no leader and
+no merge step, and pulling never writes into the channel. Everything is addressed by the
+sha256 of its plaintext, which is why the same line arriving twice is indistinguishable
+from it arriving once. The one cost of append-only: a re-pushed summary leaves the old
+line behind, and a reader takes the last one. Compaction is designed (`heads` carry a
+generation counter; a reader that sees a new generation restarts its offset from zero,
+which is safe precisely because inserts are idempotent) but not built yet.
 
 If you run it and it *doesn't* recognise a source you use, that is the most useful bug
 report there is — please use the
