@@ -53,10 +53,10 @@ immutably instead of silently proceeding.
 Before you trust a tool with your history, look at what's actually there.
 
 ```bash
-uvx batonpass-cli discover --report ~/Desktop/batonpass-report.html
+uvx --from batonpass-cli batonpass discover --report ~/Desktop/batonpass-report.html
 ```
 
-One file, standard library only, ~2 seconds, no network, no writes. It produces a
+One file, standard library only, a few seconds, no network, no writes. It produces a
 single self-contained HTML page telling you:
 
 - **what it found** — 261,354 messages across 713 conversations in 9 sources, 2.2 GB on my machine
@@ -264,10 +264,13 @@ for a schema fingerprint, not your data.
 ## Install
 
 ```bash
-uvx batonpass-cli discover        # no install, runs from a temp env
-pipx run batonpass-cli discover
-pip install "batonpass-cli[zstd]"  # or install it, with the compressor
+pipx install batonpass-cli             # the command it gives you is `batonpass`
+uvx --from batonpass-cli batonpass discover   # or run it without installing
+pip install "batonpass-cli[zstd]"      # zstandard buys the 2.5x storage ratio
 ```
+
+`uvx` needs `--from` because it looks for an executable with the package's name,
+and this package's executable is `batonpass`, not `batonpass-cli`.
 
 The package is `batonpass-cli` on PyPI, because the plain name `batonpass` is
 already spoken for — an unrelated project called `baton-pass` normalizes to the
