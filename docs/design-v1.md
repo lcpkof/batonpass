@@ -32,7 +32,7 @@
 | Python import | `batonpass` | 本地包，不冲突 |
 | 中文名 | 接力棒 | — |
 
-三处都空，包名和命令名一致，`pip install batonpass` 装到的就是它，不会有歧义。即便如此，**发布前第一件事仍然是把三个名字都占下来**——`membridge` 就是名字没占，用户 `pip install membridge` 装到了别人的项目上。
+`batonpass` 这个名字在 PyPI 上已被 `baton-pass` 挡住——查重会先去掉 `-`/`_`/`.` 再比，两者等价。所以分发名走 `batonpass-cli`，命令名仍是 `batonpass`；GitHub 仓库名不受影响。即便如此，**发布前第一件事仍然是把三个名字都占下来**——`membridge` 就是名字没占，用户 `pip install membridge` 装到了别人的项目上。
 
 对标单词查过被占的：`baton` / `weft` / `cairn` / `portage` / `carryover` / `handover` / `switchboard`，全部在 PyPI 或 npm 上有主，所以走复合词。
 

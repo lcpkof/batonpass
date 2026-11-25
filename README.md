@@ -48,7 +48,7 @@ immutably instead of silently proceeding.
 Before you trust a tool with your history, look at what's actually there.
 
 ```bash
-uvx batonpass discover --report ~/Desktop/batonpass-report.html
+uvx batonpass-cli discover --report ~/Desktop/batonpass-report.html
 ```
 
 One file, standard library only, ~2 seconds, no network, no writes. It produces a
@@ -221,7 +221,7 @@ $ batonpass doctor --channel ~/Dropbox/batonpass
 OK    python       3.9.6
 OK    sqlite       3.54.0, fts5 + trigram
 WARN  zstd         not installed — archives stay readable, 2.50x becomes 2.04x
-             → pip install "batonpass[zstd]"
+             → pip install "batonpass-cli[zstd]"
 OK    library      680.6 MB, 713 sessions, 263,256 messages
 OK    identity     12 named project key(s), 558 honestly ungrouped
 OK    channel      id c62264a7f0b4, 1 device(s), 0 B
@@ -259,10 +259,15 @@ for a schema fingerprint, not your data.
 ## Install
 
 ```bash
-uvx batonpass discover        # no install, runs from a temp env
-pipx run batonpass discover
-pip install "batonpass[zstd]"  # or install it, with the compressor
+uvx batonpass-cli discover        # no install, runs from a temp env
+pipx run batonpass-cli discover
+pip install "batonpass-cli[zstd]"  # or install it, with the compressor
 ```
+
+The package is `batonpass-cli` on PyPI, because the plain name `batonpass` is
+already spoken for — an unrelated project called `baton-pass` normalizes to the
+same string, and PyPI compares names with the separators removed. The command
+it installs is still `batonpass`.
 
 Python 3.9+. Zero required dependencies — `zstandard` is the only extra, and it
 buys the 2.5× storage ratio. Without it, libraries written with zstd still

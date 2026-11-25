@@ -89,7 +89,7 @@ def check_zstd():
     except Exception:
         return _check(WARN, "zstd", "not installed — archives stay readable, "
                                     "2.50x becomes 2.04x",
-                      'pip install "batonpass[zstd]"')
+                      'pip install "batonpass-cli[zstd]"')
     return _check(OK, "zstd", getattr(__import__("zstandard"), "__version__", "installed"))
 
 
@@ -231,7 +231,7 @@ def check_channel(channel):
                               "export BATONPASS_KEY=…  (or ~/.batonpass/key)"))
         except Exception as exc:                  # cryptography missing
             out.append(_check(WARN, "encryption", "channel is sealed; %s" % exc,
-                              'pip install "batonpass[crypto]"'))
+                              'pip install "batonpass-cli[crypto]"'))
     sizes = sum(_streams(channel))
     out.append(_check(INFO, "channel", "%s of streams — `sync status` says how much is new"
                       % _human(sizes)))

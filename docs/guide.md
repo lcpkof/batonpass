@@ -21,7 +21,7 @@
 
 ```bash
 # 方式一：如果装了 uv（推荐，不污染系统 Python）
-uvx batonpass discover --report ~/Desktop/batonpass-report.html
+uvx batonpass-cli discover --report ~/Desktop/batonpass-report.html
 
 # 方式二：直接跑单文件，连装都不用
 curl -sL https://raw.githubusercontent.com/<你>/batonpass/main/discover.py -o /tmp/discover.py

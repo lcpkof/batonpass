@@ -33,7 +33,7 @@ def sealed_channel(path, passphrase="correct horse battery"):
     return path
 
 
-@unittest.skipUnless(crypto_ok, 'needs pip install "batonpass[crypto]"')
+@unittest.skipUnless(crypto_ok, 'needs pip install "batonpass-cli[crypto]"')
 class SealedChannel(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="batonpass-crypt-")

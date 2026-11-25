@@ -31,7 +31,7 @@ def undecodable_hint(conn) -> str:
         n = 0
     if n and not HAVE_ZSTD:
         return ('(%d stored texts cannot be read without zstandard — '
-                'pip install "batonpass[zstd]")' % n)
+                'pip install "batonpass-cli[zstd]")' % n)
     try:
         sess = conn.execute(
             "SELECT COUNT(*) FROM session WHERE msg_count > 0").fetchone()[0]

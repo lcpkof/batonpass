@@ -152,7 +152,7 @@ def enable(channel: str) -> dict:
     """Mark a channel encrypted and seal whatever blobs are already in it."""
     if not available():
         raise RuntimeError('encryption needs one optional dependency: '
-                           'pip install "batonpass[crypto]"')
+                           'pip install "batonpass-cli[crypto]"')
     _passphrase(required=True)
     info = marker(channel)
     if info.get("enc") == ALGO:
