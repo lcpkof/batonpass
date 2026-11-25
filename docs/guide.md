@@ -44,22 +44,24 @@ python3 /tmp/discover.py --report ~/Desktop/batonpass-report.html
 ## B 档：单机归档（5 分钟）
 
 ```bash
-# 1. 初始化（建库、注册本机）
-batonpass init
+# 1. 先看有什么（只读，不写任何文件）
+batonpass discover
 
-# 2. 先看它打算干什么，不实际写入
-batonpass plan
+# 2. 归档（首次全量，之后重跑只补新增）
+batonpass archive
 
-# 3. 正式归档（首次全量）
-batonpass archive --all
+# 3. 建检索索引（本地派生物，可随时重建）
+batonpass index
 
 # 4. 查
 batonpass find "岗位表"
-batonpass find "上周关于反爬的讨论" --at 7d
-
-# 5. 体检
-batonpass doctor
+batonpass find "反爬" --at 7d --explain
+batonpass tasks                    # 每个项目一行，按最近活跃排序
+batonpass card xueji               # 一个项目的交接卡
+batonpass resume                   # 当前目录上次干到哪了
 ```
+
+> `init` / `plan` / `doctor` 是 v1.0 的动词，v0.4 还没有。现在每一步都自带预览：`discover` 是体检，`identity --json` 是身份重建的计数。
 
 ### 首次归档要多久
 

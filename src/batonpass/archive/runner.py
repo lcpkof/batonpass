@@ -99,7 +99,8 @@ def _train_from_source(adapter, conn_src):
     return train_dict(samples)
 
 
-def run_archive(only=None, level=1, limit=None, db=None, dry_run=False):
+def run_archive(only=None, level=1, limit=None, db=None, dry_run=False,
+               with_identity=True):
     conn = connect(db)
     device = device_name()
     from ..discover import sources as discover_sources
@@ -119,4 +120,9 @@ def run_archive(only=None, level=1, limit=None, db=None, dry_run=False):
         out["sources"].append(r.as_dict())
     for key in ("sessions", "messages", "parts", "raw_records", "new_rows", "skipped"):
         out["totals"][key] = sum(s[key] for s in out["sources"])
+    # Identity is derived, so it runs after the append, not inside it: a source
+    # that failed to archive must not leave a half-labelled project behind.
+    if with_identity and not dry_run:
+        from ..identity import build
+        out["identity"] = build(conn)
     return out

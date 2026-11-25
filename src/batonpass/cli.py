@@ -178,6 +178,154 @@ def cmd_sync(args):
     return 0
 
 
+
+# ── identity & recall ───────────────────────────────────────────
+
+def _when(iso):
+    return (iso or "")[:16].replace("T", " ")
+
+
+def cmd_index(args):
+    from .recall import build_index, index_stats
+    from .store.db import connect
+    conn = connect(args.db)
+    st = build_index(conn, force=args.rebuild)
+    after = index_stats(conn)
+    if args.json:
+        print(json.dumps({"built": st, "index": after}, ensure_ascii=False, indent=2))
+        return 0
+    print("indexed %d messages across %d sessions (%d empty)" % (
+        st["docs"], st["sessions"], st["skipped"]))
+    print("index %s · %d docs · %d/%d sessions searchable" % (
+        _fmt_bytes(after["bytes"]), after["docs"], after["sessions_indexed"],
+        after["sessions_total"]))
+    return 0
+
+
+def cmd_find(args):
+    from .recall import ensure_index, search
+    from .store.db import connect
+    conn = connect(args.db)
+    ensure_index(conn)
+    hits = search(conn, args.query, at=args.at, project=args.project,
+                  device=args.device, limit=args.limit, explain=args.explain)
+    if args.json:
+        print(json.dumps(hits, ensure_ascii=False, indent=2))
+        return 0 if hits else 1
+    if not hits:
+        # The silence contract: never invent a hit to look helpful.
+        print("nothing matched %r%s" % (
+            args.query, " in " + args.at if args.at else ""))
+        print("try: a shorter word · batonpass tasks · drop --at")
+        return 1
+    print("%d hit%s%s" % (len(hits), "" if len(hits) == 1 else "s",
+                          "  (window %s)" % args.at if args.at else ""))
+    for i, h in enumerate(hits, 1):
+        print("\n%d) %s" % (i, h["project"] or "(no project)"))
+        print("   %s" % (h["title"] or "(untitled)")[:100])
+        print("   %s · %s · %d messages · %s" % (
+            _when(h["updated_at"]), h["device"] or "?", h["messages"], h["sid"][:12]))
+        if h["snippet"]:
+            print("   “%s”" % h["snippet"][:180])
+        if args.explain:
+            print("   matched on: %s" % ", ".join(h.get("why") or []))
+    print("\nbatonpass export <sid> --text   to read one in full")
+    return 0
+
+
+def cmd_tasks(args):
+    from .identity import projects
+    from .store.db import connect
+    conn = connect(args.db)
+    rows = projects(conn, min_sessions=args.min, include_candidates=args.all)
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("no projects yet — run `batonpass archive` first")
+        return 1
+    print("%-30s %5s %5s  %-17s %s" % ("PROJECT", "SESS", "FILES", "LAST", "MACHINES"))
+    for p in rows[:args.limit]:
+        machines = p.get("device_list") or ""
+        print("%-30s %5d %5d  %-17s %s%s" % (
+            p["label"][:30], p["sessions"], p["with_files"], _when(p["last_at"]),
+            machines[:30] or "?", "  ⚠ stale" if p["stale"] else ""))
+    print("\n%d projects · batonpass card <name> for the full card" % len(rows))
+    return 0
+
+
+def cmd_card(args):
+    from .identity import card, projects, resolve
+    from .store.db import connect
+    conn = connect(args.db)
+    hits = resolve(conn, args.hint)
+    if not hits:
+        print("no project matches %r" % args.hint)
+        for p in projects(conn)[:10]:
+            print("  candidate: %s (%d sessions)" % (p["label"], p["sessions"]))
+        return 1
+    if len(hits) > 1 and not args.pick:
+        print("%d projects match %r — pick one with --pick:" % (len(hits), args.hint))
+        for i, p in enumerate(hits, 1):
+            print("  %d) %-28s %3d sessions  %s" % (i, p["label"], p["sessions"],
+                                                   _when(p["last_at"])))
+        return 2
+    target = hits[0] if not args.pick else hits[args.pick - 1]
+    print(card(conn, target["project_key"], args.sessions))
+    return 0
+
+
+def cmd_resume(args):
+    from .identity import resume_hint, projects
+    from .identity.project import derive, display
+    from .store.db import connect
+    import os
+    conn = connect(args.db)
+    cwd = args.cwd or os.getcwd()
+    if args.hint:
+        from .identity import card, resolve
+        hits = resolve(conn, args.hint)
+        print(card(conn, hits[0]["project_key"], args.sessions) if hits
+              else "no project matches %r" % args.hint)
+        return 0 if hits else 1
+    text = resume_hint(conn, cwd)
+    if not text:
+        key, _tier, _c = derive(cwd, "")
+        print("nothing recorded for %s yet." % (display(key) if key else cwd))
+        rows = projects(conn)[:8]
+        if rows:
+            print("\nmost recent work elsewhere:")
+            for p in rows:
+                print("  %-28s %3d sessions  %s" % (p["label"], p["sessions"],
+                                                    _when(p["last_at"])))
+        return 1
+    print(text)
+    return 0
+
+
+def cmd_identity(args):
+    from .identity import build
+    from .store.db import connect
+    conn = connect(args.db)
+    st = build(conn, extract_artifacts=not args.no_artifacts, limit=args.limit)
+    if args.json:
+        print(json.dumps(st, ensure_ascii=False, indent=2))
+        return 0
+    print("identity rebuilt: %d sessions%s" % (
+        st["sessions"], "" if not st["merged_subprojects"]
+        else " · %d sub-project(s) folded into their parent" % st["merged_subprojects"]))
+    n_projects = conn.execute(
+        "SELECT COUNT(DISTINCT project_key) c FROM session "
+        "WHERE project_key IS NOT NULL AND project_key<>''").fetchone()["c"]
+    print("  %d projects · %d ungrouped sessions · %d forks linked" % (
+        n_projects, st["unknown"], st["forks"]))
+    print("  artifacts %d in %d sessions" % (st["artifacts"], st["with_artifacts"]))
+    tiers = st["tiers"]
+    print("  confidence: high %d · medium %d · low %d" % (
+        tiers.get(1, 0), tiers.get(2, 0), tiers.get(3, 0)))
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="batonpass",
@@ -236,6 +384,54 @@ def build_parser():
         q.add_argument("--json", action="store_true")
         q.set_defaults(func=cmd_sync)
     y.set_defaults(func=None)
+
+    i = sub.add_parser("index", help="build the local search index (never synced)")
+    i.add_argument("--db", default=None)
+    i.add_argument("--rebuild", action="store_true", help="throw it away and redo")
+    i.add_argument("--json", action="store_true")
+    i.set_defaults(func=cmd_index)
+
+    f = sub.add_parser("find", help="find it again from a half-remembered word")
+    f.add_argument("query")
+    f.add_argument("--at", default=None,
+                   help="7d · 12h · today · yesterday · 2026-09 · 2026-09-20 · "
+                        "2026-09-01..2026-09-20")
+    f.add_argument("--project", default=None)
+    f.add_argument("--device", default=None)
+    f.add_argument("--limit", type=int, default=5)
+    f.add_argument("--explain", action="store_true", help="which signal matched")
+    f.add_argument("--db", default=None)
+    f.add_argument("--json", action="store_true")
+    f.set_defaults(func=cmd_find)
+
+    t = sub.add_parser("tasks", help="what is in flight, one line per project")
+    t.add_argument("--min", type=int, default=1, help="sessions required to show")
+    t.add_argument("--limit", type=int, default=30)
+    t.add_argument("--all", action="store_true", help="include low-confidence clusters")
+    t.add_argument("--db", default=None)
+    t.add_argument("--json", action="store_true")
+    t.set_defaults(func=cmd_tasks)
+
+    c = sub.add_parser("card", help="the handover card for one project")
+    c.add_argument("hint")
+    c.add_argument("--sessions", type=int, default=4)
+    c.add_argument("--pick", type=int, default=None, help="when several match, choose 1..n")
+    c.add_argument("--db", default=None)
+    c.set_defaults(func=cmd_card)
+
+    r = sub.add_parser("resume", help="pick up where this directory left off")
+    r.add_argument("hint", nargs="?", default=None)
+    r.add_argument("--cwd", default=None)
+    r.add_argument("--sessions", type=int, default=4)
+    r.add_argument("--db", default=None)
+    r.set_defaults(func=cmd_resume)
+
+    n = sub.add_parser("identity", help="recompute project identity and artifacts")
+    n.add_argument("--db", default=None)
+    n.add_argument("--no-artifacts", action="store_true")
+    n.add_argument("--limit", type=int, default=None)
+    n.add_argument("--json", action="store_true")
+    n.set_defaults(func=cmd_identity)
     return p
 
 

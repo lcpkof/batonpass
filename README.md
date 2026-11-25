@@ -18,8 +18,10 @@ batonpass archive                      # pull it into a portable library  (~1 mi
 batonpass export <session> --text      # read one conversation back out
 batonpass sync push ~/Dropbox/baton    # one file per machine, summaries only (~2 MB)
 batonpass sync pull ~/Dropbox/baton    # on the other machine: 713 sessions, zero messages
-batonpass find "岗位表" --at 7d           # search it, with time windows        (next)
-batonpass resume                       # handover packet for a fresh machine  (next)
+batonpass index                        # local search index, ~17 s per 700 sessions
+batonpass find "岗位表" --at 7d           # search it, with time windows
+batonpass tasks                        # every project, one line each
+batonpass resume                       # handover card for the directory you are in
 ```
 
 ---
@@ -114,7 +116,9 @@ picking one silently and losing the other.
 | `discover` | **shipped** — read-only inventory, ~2 s, one HTML page |
 | `archive` | **shipped** — five adapters, replay-safe (re-run adds 0 rows) |
 | `sync` | **shipped** — append-only channel, tiered push/pull, replay-safe both ways |
-| `find` · `resume` | designed in [`docs/design-v1.md`](docs/design-v1.md), landing next |
+| `identity` | **shipped** — machine-independent project key, artifact refs, handover cards |
+| `index` · `find` | **shipped** — FTS5 trigram over everything you typed, with time windows |
+| `tasks` · `card` · `resume` | **shipped** — the handover packet, from a project name or a directory |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 
@@ -130,6 +134,22 @@ messages — and parts match once you account for the 72,184 `step-start` /
 `step-finish` rows it skips *by name*. A message with no prose (a tool call, a
 reasoning block) becomes a structured part instead of being thrown away. Nothing is
 dropped silently; anything unaudited is reported as a number you can argue with.
+
+`identity` + `find`, measured on that same 713-session library:
+
+```
+713 sessions                →  12 real projects · 558 honestly ungrouped
+                                57 sessions folded into `xueji`, 50 into `gp`
+6,512 deliverables          →  found in 575 sessions (xlsx, csv, pdf, png, md…)
+58,508 messages indexed     →  16.6 s one-off · 164 MB · 59212 docs
+batonpass find 岗位表        →  one hit, with the sentence it appeared in
+batonpass find 妖族          →  nothing   (it never appears — 妖股 does)
+```
+
+The ungrouped 558 are the point. Every one of them had a session title that looked
+like a project name ("这道题我做错了，帮我讲讲"), and promoting those produced 400
+clusters of one — structure that was pure invention. They stay searchable; they are just
+not lied about.
 
 `sync`, measured the same way — a real 713-session library, a channel folder, and a
 second library that has never seen any of those apps:
