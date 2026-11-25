@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+batonpass-report.html
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
