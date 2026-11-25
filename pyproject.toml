@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batonpass-cli"
-version = "0.5.1"
+version = "0.5.2"
 description = "Never drop the baton. Read-only archive of the AI history on your machine, portable to the next one."
 readme = "README.md"
 requires-python = ">=3.9"

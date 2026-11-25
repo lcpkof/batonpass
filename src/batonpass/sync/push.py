@@ -164,21 +164,24 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
         n_msg, max_seq = _counts(conn, sid)
         sig = "%d:%d:%d" % (n_msg, max_seq, SUMMARY_VER)
         last_tier = int(_sync_get(conn, ckey, "sent_tier:" + sid, 0) or 0)
-        # Two separate questions. Metadata goes stale when the session grows or
-        # the summariser improves; bodies are missing until they have been sent
-        # at the tier you are asking for now. Asking for tier 2 after a tier-1
-        # push must still send the messages, and must not re-send 713 summaries.
-        need_meta = _sync_get(conn, ckey, "sent:" + sid) != sig
+        # Metadata goes stale when the session grows or the summariser improves;
+        # bodies are missing until they have been sent at the tier you are asking
+        # for now. Both questions are *per tier*: `push --tier 0` followed by
+        # `push --tier 1` must still send the summaries, because a t0 line is a
+        # catalog entry and a t1 line is the prose a new machine actually reads.
+        meta_tier = _sync_get(conn, ckey, "sent_meta:" + sid)
+        meta_tier = -1 if meta_tier is None else int(meta_tier)
+        need_meta = _sync_get(conn, ckey, "sent:" + sid) != sig or meta_tier < tier
         need_bodies = tier >= 2 and last_tier < tier
         if not need_meta and not need_bodies:
             stat["skipped"] += 1
             continue
         try:
             stat["sessions_sent"] += 1
-            if need_meta:
+            if need_meta and meta_tier < 0:
                 t0_buf.append(wire.pack(_t0(row)))
 
-            if need_meta and tier >= 1:
+            if need_meta and tier >= 1 and meta_tier < 1:
                 # The summary carries its text inline. Sending it as blobs too
                 # would mean thousands of 700-byte files, and a filesystem
                 # charges a 4 KB block for each of them.
@@ -193,7 +196,8 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
             if need_bodies:
                 stat["messages"] += _push_messages(
                     conn, ckey, channel, codecs, sid, source, t2_buf, stat)
-            sent[sid] = [sig, tier, max_seq]
+            sent[sid] = [sig, tier, max_seq,
+                         tier if need_meta else meta_tier]
         except Exception as exc:            # one bad session must not sink the push
             stat["errors"].append("%s: %s" % (sid, exc))
 
@@ -210,9 +214,13 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
 
     # Mark what we sent only after the bytes are on disk, and never a session
     # that raised — otherwise it would never be retried.
-    for sid, (sig, sent_tier, max_seq) in sent.items():
+    for sid, (sig, sent_tier, max_seq, meta) in sent.items():
         if _sync_get(conn, ckey, "sent:" + sid) != sig:
             _sync_put(conn, ckey, "sent:" + sid, sig)
+        prev_meta = _sync_get(conn, ckey, "sent_meta:" + sid)
+        prev_meta = -1 if prev_meta is None else int(prev_meta)
+        if meta > prev_meta:
+            _sync_put(conn, ckey, "sent_meta:" + sid, meta)
         if sent_tier > int(_sync_get(conn, ckey, "sent_tier:" + sid, 0) or 0):
             _sync_put(conn, ckey, "sent_tier:" + sid, sent_tier)
         if sent_tier >= 2:

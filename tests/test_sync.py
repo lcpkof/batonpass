@@ -78,6 +78,21 @@ class SyncBetweenTwoMachines(unittest.TestCase):
         self.assertIn("记忆中枢", head["one_line"])
         self.assertIn("那就开始吧", head["head_json"])
 
+    def test_a_catalog_push_does_not_eat_the_summaries(self):
+        """`push --tier 0` then `push --tier 1` must still deliver the prose.
+
+        It did not: the "this session is up to date" watermark ignored the tier,
+        so the catalog push convinced the summary push there was nothing to do
+        and the new machine arrived with titles and no prose.
+        """
+        push(self.channel, tier=0, device="alpha", conn=self.a)
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        pull(self.channel, tier=1, device="beta", conn=self.b)
+        head = self.b.execute("SELECT one_line, head_json FROM session_head").fetchone()
+        self.assertIsNotNone(head, "tier 1 found nothing to pull after a tier 0 push")
+        self.assertIn("记忆中枢", head["one_line"])
+        self.assertIn("那就开始吧", head["head_json"])
+
     def test_the_files_ride_with_the_summary_not_with_the_bodies(self):
         """A card that cannot name your files is a card about a task, not the task."""
         import json as _json

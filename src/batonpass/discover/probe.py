@@ -1026,25 +1026,36 @@ def main(argv=None):
     ap.add_argument("--explain", action="store_true", help="print detection reasoning")
     args = ap.parse_args(argv)
 
-    print(f"batonpass discover v{VERSION} — read-only scan")
+    # `--json -` means "the JSON is the answer": stdout stays machine-readable
+    # and nothing is written to disk, so it can be piped.
+    to_stdout = args.json_path == "-"
+    say = sys.stderr if to_stdout else sys.stdout
+
+    print(f"batonpass discover v{VERSION} — read-only scan", file=say)
     summary = run(args)
 
-    out = Path(os.path.expanduser(args.report))
-    out.write_text(render(summary), encoding="utf-8")
-    if args.json_path:
+    out = None
+    if not to_stdout:
+        out = Path(os.path.expanduser(args.report))
+        out.write_text(render(summary), encoding="utf-8")
+    if args.json_path and not to_stdout:
         Path(os.path.expanduser(args.json_path)).write_text(
             json.dumps(summary, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8")
+    if to_stdout:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
 
     t = summary["totals"]
     print(f"\n  {t['messages']:,} messages · {t['sessions']:,} conversations · "
-          f"{t['recognised']} sources recognised · {human(t['bytes_on_disk'])}")
+          f"{t['recognised']} sources recognised · {human(t['bytes_on_disk'])}",
+          file=say)
     print(f"  {t['skipped_files']} files skipped (browser caches, backups) · "
           f"{t['unclaimed_dirs']} dirs in the queue · "
-          f"{t.get('ignored_dirs', 0)} left alone on purpose")
-    print(f"  report → {out}")
-    if args.json_path:
-        print(f"  json   → {args.json_path}")
+          f"{t.get('ignored_dirs', 0)} left alone on purpose", file=say)
+    if out is not None:
+        print(f"  report → {out}", file=say)
+    if args.json_path and not to_stdout:
+        print(f"  json   → {args.json_path}", file=say)
     return 0
 
 

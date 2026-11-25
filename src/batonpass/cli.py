@@ -28,8 +28,13 @@ def cmd_discover(args):
     argv = []
     if args.only:
         argv += ["--only", args.only]
+    if args.deep:
+        argv.append("--deep")
+    if args.explain:
+        argv.append("--explain")
     if args.json:
-        argv.append("--json")
+        # the scanner wants to know where to put it; "-" means stdout
+        argv += ["--json", args.json]
     if getattr(args, "report", None):
         argv += ["--report", args.report]
     return discover_main(argv)
@@ -431,7 +436,12 @@ def build_parser():
     d = sub.add_parser("discover", help="inventory local AI history (read-only, writes nothing)")
     d.add_argument("--only", default=None)
     d.add_argument("--report", default=None)
-    d.add_argument("--json", action="store_true")
+    d.add_argument("--json", nargs="?", const="-", default=None, metavar="PATH",
+                   help="also write JSON here (- for stdout)")
+    d.add_argument("--deep", action="store_true",
+                   help="measure payload bytes (slower)")
+    d.add_argument("--explain", action="store_true",
+                   help="print detection reasoning")
     d.set_defaults(func=cmd_discover)
 
     a = sub.add_parser("archive", help="copy discovered history into the library")
