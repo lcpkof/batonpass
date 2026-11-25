@@ -104,6 +104,31 @@ def build(conn, force: bool = False, limit: int = None, progress=None) -> dict:
     return stats
 
 
+def stale(conn) -> dict:
+    """Sessions the index does not describe: never indexed, or behind."""
+    missing = conn.execute(
+        "SELECT COUNT(*) c FROM session s WHERE s.msg_count > 0 AND NOT EXISTS"
+        " (SELECT 1 FROM search_state st WHERE st.sid=s.sid)").fetchone()["c"]
+    behind = conn.execute(
+        "SELECT COUNT(*) c FROM search_state st WHERE st.ver<>? OR st.last_seq <"
+        " (SELECT COALESCE(MAX(seq),-1) FROM message m WHERE m.sid=st.sid)",
+        (FTS_VER,)).fetchone()["c"]
+    return {"missing": missing, "behind": behind}
+
+
+def ensure_fresh(conn, progress=None) -> dict:
+    """Tables, plus whatever has arrived since the last build.
+
+    `find` on a library nobody had indexed used to answer "nothing matched" —
+    the worst possible failure, because it is indistinguishable from the truth.
+    """
+    ensure(conn)
+    counts = stale(conn)
+    if counts["missing"] or counts["behind"]:
+        return build(conn, progress=progress)
+    return {"docs": 0, "sessions": 0, "skipped": 0, "up_to_date": True}
+
+
 def size_bytes(conn) -> int:
     try:
         row = conn.execute(

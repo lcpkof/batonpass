@@ -641,9 +641,50 @@ def looks_like_ai_dir(name: str) -> bool:
     return any(k in low for k in keys)
 
 
+# A directory that looks like AI tooling but is structurally not history: a
+# bundled runtime, an Electron profile's caches, a system dir. These sat in the
+# "unclaimed" list forever — which reads like a promise to collect them, and is
+# really just noise. Name the reason and close the ticket.
+_NOT_HISTORY = (
+    ("dsh-runtime", "a bundled Node runtime, not transcripts"),
+    ("Application Support/ZCode", "an Electron profile — caches and IndexedDB, "
+                                  "the chat db lives in ~/.zcode"),
+    ("ContextStoreAgent", "an Apple system directory"),
+    ("/dsh-usage", "a token-usage ledger, not a transcript"),
+    ("/dsh-session-archive", "an empty archive — only a state marker inside"),
+)
+_TRANSCRIPT_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".jsonl", ".json")
+
+
+def _transcript_files(root, depth: int = 3) -> int:
+    n, base = 0, str(root).count(os.sep)
+    for dirpath, dirnames, filenames in os.walk(root):
+        if dirpath.count(os.sep) - base >= depth:
+            dirnames[:] = []
+        n += sum(1 for f in filenames if f.endswith(_TRANSCRIPT_SUFFIXES))
+    return n
+
+
+def not_history_reason(path) -> str:
+    """Why this directory cannot hold what we archive — or "" if we don't know."""
+    text = str(path)
+    for frag, reason in _NOT_HISTORY:
+        if frag in text:
+            return reason
+    try:
+        if _transcript_files(path) == 0:
+            return "no file that could hold a transcript inside"
+    except OSError:
+        return ""
+    return ""
+
+
 def probe_roots(claimed: set, explain: bool):
-    """Directories that smell like AI tooling but hold nothing we parse."""
-    found = []
+    """Directories that look like AI tooling but hold nothing we parse.
+
+    Returns (unclaimed, ignored): things we cannot explain, and things we can.
+    """
+    found, ignored = [], []
     for pattern in PROBE_ROOTS:
         base = Path(os.path.expanduser(pattern))
         if not base.exists():
@@ -661,12 +702,20 @@ def probe_roots(claimed: set, explain: bool):
             size, files, trunc = dir_size(child)
             if files == 0:
                 continue
+            reason = not_history_reason(child)
+            if reason:
+                ignored.append({"path": str(child), "size": size, "files": files,
+                                "reason": reason})
+                if explain:
+                    print(f"    not history: {child}  ({reason})")
+                continue
             found.append({"path": str(child), "size": size, "files": files,
                           "truncated": trunc})
             if explain:
                 print(f"    unclaimed? {child}  files={files} size={human(size)}")
     found.sort(key=lambda x: -x["size"])
-    return found
+    ignored.sort(key=lambda x: -x["size"])
+    return found, ignored
 
 
 def run(args):
@@ -704,7 +753,10 @@ def run(args):
                             "first": None, "last": None, "payload_bytes": None,
                             "notes": "", "degradations": [("permission-denied", str(e)[:200])]})
 
-    unclaimed = [] if keep else probe_roots(claimed, args.explain)
+    if keep:
+        unclaimed, ignored = [], []
+    else:
+        unclaimed, ignored = probe_roots(claimed, args.explain)
 
     # identical copies (a .bak sibling, a cloned profile) must not be counted twice
     seen_sig, deduped = set(), []
@@ -741,6 +793,7 @@ def run(args):
         "python": sys.version.split()[0],
         "sources": sources,
         "unclaimed": unclaimed,
+        "ignored": ignored,
         "skipped": skipped,
         "totals": {
             "sources": len(sources),
@@ -753,6 +806,7 @@ def run(args):
             "degradation_kinds": len(deg_count),
             "skipped_files": sum(skipped.values()),
             "unclaimed_dirs": len(unclaimed),
+            "ignored_dirs": len(ignored),
         },
     }
     return summary
@@ -828,6 +882,7 @@ def render(summary) -> str:
   <div class="kpi"><div class="n">{t['recognised']}</div><div class="l">sources recognised</div></div>
   <div class="kpi"><div class="n">{human(t['bytes_on_disk'])}</div><div class="l">readable on disk</div></div>
   <div class="kpi"><div class="n">{t['unclaimed_dirs']}</div><div class="l">dirs in the queue</div></div>
+  <div class="kpi"><div class="n">{t.get('ignored_dirs', 0)}</div><div class="l">left alone on purpose</div></div>
 </div>""")
 
     recognised = [s for s in summary["sources"] if s["adapter"]]
@@ -908,6 +963,18 @@ Open an issue with the path and table names — never with conversation content.
 open an issue with the directory name — do not paste conversation content.</div>
 </div>""")
 
+    if summary.get("ignored"):
+        ur = "".join(
+            f"<tr><td><code>{esc(u['path'])}</code></td><td>{human(u['size'])}</td>"
+            f"<td>{esc(u['reason'])}</td></tr>" for u in summary["ignored"][:20])
+        rows.append(f"""<h2>Looked at, and deliberately not touched</h2>
+<div class="card">
+<table><tr><th>directory</th><th>size</th><th>why</th></tr>{ur}</table>
+<div class="note">A runtime, a browser profile, or a system folder holds no
+transcript. Listing them as "unclaimed" would be a promise to collect something
+that does not exist, so they are named once and closed.</div>
+</div>""")
+
     if summary["totals"]["degradation_kinds"]:
         rows.append(f"""<h2>What this report does not see</h2>
 <div class="card">
@@ -973,7 +1040,8 @@ def main(argv=None):
     print(f"\n  {t['messages']:,} messages · {t['sessions']:,} conversations · "
           f"{t['recognised']} sources recognised · {human(t['bytes_on_disk'])}")
     print(f"  {t['skipped_files']} files skipped (browser caches, backups) · "
-          f"{t['unclaimed_dirs']} dirs still in the queue")
+          f"{t['unclaimed_dirs']} dirs in the queue · "
+          f"{t.get('ignored_dirs', 0)} left alone on purpose")
     print(f"  report → {out}")
     if args.json_path:
         print(f"  json   → {args.json_path}")

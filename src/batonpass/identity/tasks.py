@@ -363,6 +363,20 @@ def card(conn, project_key: str, sessions: int = 4) -> str:
     if hist:
         lines.append("做过  %s" % " · ".join("%s×%d" % (h["name"], h["count"]) for h in hist))
 
+    # What someone wrote down on purpose. This is the only part of a card that
+    # is not inferred from a transcript, so it goes near the top.
+    try:
+        tid = task_id(project_key)
+        events = conn.execute(
+            "SELECT kind, body FROM task_event WHERE tid=? AND COALESCE(body,'')<>''"
+            " ORDER BY lamport DESC LIMIT 2", (tid,)
+        ).fetchall()
+    except Exception:                      # a library from before task_event
+        events = []
+    for e in reversed(events):
+        label = {"blocked": "卡住", "decision": "决定", "done": "完成"}.get(e["kind"], "笔记")
+        lines.append("备注  %s：%s" % (label, _clip(e["body"], 80)))
+
     ask = first_ask(conn, newest["sid"], newest["source"])
     if ask:
         lines.append("原话  「%s」" % _clip(ask, 60))
