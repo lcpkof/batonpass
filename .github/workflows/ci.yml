@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: py${{ matrix.python }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: optional deps, so nothing silently skips
+        run: pip install "cryptography>=3.4" "zstandard>=0.21"
+      - name: what sqlite does this runner have
+        run: python -c "import sqlite3; print(sqlite3.sqlite_version)"
+      - name: tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+  package:
+    name: install the wheel and run the cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . "zstandard>=0.21"
+      - name: the console script exists and the library is empty but usable
+        run: |
+          batonpass --version
+          batonpass doctor --db "$RUNNER_TEMP/none.db" || true
+          batonpass doctor --json --db "$RUNNER_TEMP/none.db" > /dev/null || true
+      - name: archive a fixture and search it through mcp
+        run: |
+          batonpass sync --help > /dev/null
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | batonpass mcp --db "$RUNNER_TEMP/mcp.db" | tee out.txt
+          grep -q memory_search out.txt

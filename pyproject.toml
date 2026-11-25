@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batonpass"
-version = "0.4.0"
+version = "0.5.0"
 description = "Never drop the baton. Read-only archive of the AI history on your machine, portable to the next one."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,6 +31,7 @@ dependencies = []
 
 [project.optional-dependencies]
 zstd = ["zstandard>=0.21"]
+crypto = ["cryptography>=3.4"]
 
 [project.urls]
 Homepage = "https://github.com/lcpkof/batonpass"

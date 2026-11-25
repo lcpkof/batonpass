@@ -214,7 +214,9 @@ UUID / 时间戳命名的目录**不算项目**（`workspace/draft-42f3f9e1…` 
 新机器到达 = 2.8 MB / 0.1 秒，然后立刻能"我记得有这件事，是在哪台机器、哪个会话"。只拉 t0 的 **356 KB** 实测就够：`tasks` 列出 12 个项目（含会话数、设备、⚠ 过期标记），`card xueji` 打开同一张交接卡，fork 关系也在——因为 t0 每行本来就带着 `pk` 和 `forked_from`。要动手了再拉 T2。
 **别做"全下载"或"啥都没有"两档**——那是别人现在的状态，也是要解决的那点。
 
-> **append-only 的代价先说清楚**：重推的摘要会在文件里留下旧行，读的人取最后一行。压缩已设计未实现——`heads/<device>/tN.json` 带 `gen` 计数，读的人发现 `gen` 变了就把偏移重置为 0；因为插入幂等，重读是安全的。没这步之前，重复推送的代价是文件变长，不是数据错。
+> **append-only 的代价，以及它怎么自己收**：重推的摘要会在文件里留下旧行，读的人取最后一行。所以流文件在明显超过"活着的大小"时会被重写成**一条键一行**（后写的赢）：`sync push` 顺手做，`sync compact` 手动做。`heads/<device>.<tier>.json` 带 `gen` 计数，重写后 +1；读的人发现 `gen` 变了就把偏移重置为 0 重读——因为插入幂等，重读永远安全。实测：同一批 713 会话推三次 = 1005 KB / 2139 行 → 335 KB / 713 行，pull 出来的库一字不差。
+
+> **为什么不是每次推完都重写**：重写意味着 fsync 整个文件。目标是不让文件无界增长，不是让它保持最小。三道闸：小于地板（t0 512 KB / t1 4 MB / t2 32 MB）不动；没比"活着的大小"大一倍不动；`--force` 想什么时候收就什么时候收。
 
 ### 4.5 recall —— 检索 + 交接
 
@@ -226,10 +228,12 @@ UUID / 时间戳命名的目录**不算项目**（`workspace/draft-42f3f9e1…` 
   - **索引是本地派生物，不进通道**：对端用同一批不可变消息自己重建，所以它可以随便激进（每个词都切 trigram），不占同步预算。向量是可选增强，没有 embedding provider 也能用（Alma 现在就卡在这，HTTP 400）。
 - **时间窗语法**：`at:7d` / `at:2026-09` / `at:2026-09-20` / `at:2026-09-01..2026-09-20`。
 - **沉默契约**：没有高质量命中就明确返回空，附"我查了什么"。绝不编。
-- **MCP 只暴露三个工具**（v1.0，CLI 先跑通）：`memory_search(query, scope)` / `memory_add(text, tags)` / `resume(task_hint)`。工具越少，模型越会用。
+- **MCP 只暴露三个工具**（v0.5 已实现，`batonpass mcp`，stdio，无守护进程）：`memory_search(query, at, project, limit)` / `memory_add(text, project, kind)` / `resume(project, sessions)`。工具越少，模型越会用。`memory_add` 写的是 `task_event` 追加事件，会出现在交接卡的「备注」行——写了看不见，等于没写。
 - **交接卡**：`kind=handover`，五行 `goal / done / failed / next / refs`。和 memory-bridge 的格式**兼容**（能读能写），这样两边的用户数据能互通。
 - **过期工作台比没有工作台更危险**：handover 超过 7 天标 `stale`，不自动喂给模型。
 - **换机自动回忆**：会话启动时读 `cwd` → `project_key` → 有命中就把任务卡塞进上下文。不用你问。
+- **索引自己补**：`find` / `memory_search` 动手前先做一次增量检查（缺会话、落后、版本旧），需要就补。理由很直白：没建索引的库如果回答"没找到"，和真相长得一模一样。
+- **体检**：`doctor` 只读，把失败翻译成一行能动手的话（Python / sqlite+trigram / zstd / 磁盘 / 库版本 / 身份新旧 / 索引落后 / 通道 schema 与设备版本）。
 
 ---
 
@@ -467,7 +471,9 @@ CREATE TABLE degradation (           -- 降级台账
 - 无遥测、无崩溃上报、无"匿名使用统计"。
 - 脱敏门设在**出口**（构造 delta 之前，不是传完之后）：命中 `密码|私钥|身份证|api key|token|secret|BEGIN PRIVATE KEY|sk-` 的记录强制 `local_only`，不出这台机器。被拦的要记 `redacted` 计数，让人知道。
 
-**通道加密**：v1 默认明文（通道本身在你自己手里）；`--encrypt` 用 age 或 `cryptography` 做端到端，密码走 `BATONPASS_PASSPHRASE` 环境变量，不落盘、不进日志、不打印。
+**通道加密（v0.5 已实现）**：`batonpass sync init PATH --encrypt` 之后，每个 blob 落盘前先 `zlib → AES-256-GCM`，通道里已有的 blob 就地重封。密钥由 scrypt（`cryptography` 自带的绑定，不用 `hashlib.scrypt`——Apple 系统 Python 没有它）从口令派生，口令走 `BATONPASS_KEY` 或 `~/.batonpass/key`，**不进通道、不落日志、不打印**。地址仍是明文 sha256，所以幂等不受影响；口令错了给一句话，不伪装成文件损坏。
+
+**明说的那点泄漏**：目录行（`t0/t1` 的 JSON 行）不封——dedupe key 在里面，封了 compaction 就没法比较对象。所以通道的持有者能看到"多少会话、什么标题、什么日期"，看不到正文。想连这点都藏，只能整条通道换镜像（T2 全封 + 目录行只留 sid），代价是不可压缩、不可人工 grep——不做。
 
 **令牌**：不存静态共享 token（现在的记忆中枢就是一个静态 token + CORS `*` + 明文 HTTP 监听 0.0.0.0，这是要还的债）。通道模式不需要任何 token——文件系统权限就是认证。
 

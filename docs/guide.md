@@ -61,7 +61,7 @@ batonpass card xueji               # 一个项目的交接卡
 batonpass resume                   # 当前目录上次干到哪了
 ```
 
-> `init` / `plan` / `doctor` 是 v1.0 的动词，v0.4 还没有。现在每一步都自带预览：`discover` 是体检，`identity --json` 是身份重建的计数。
+> 出问题先跑 `batonpass doctor`：它把"为什么不好使"翻译成一行能动手的话（Python 版本、sqlite 有没有 trigram、库是哪个旧版本写的、通道在哪台机器落后了），只读，不改任何东西。`init` / `plan` 仍是 v1.0 的动词。
 
 ### 首次归档要多久
 
@@ -150,6 +150,41 @@ batonpass export 5d49fc52 --text                    # 完整对话，逐字节�
 
 **成本**：通道 2.8 MB（713 个会话的目录 + 摘要）；本地库不变；没有常驻进程。
 已推过的会话不会重推，除非它长了新消息、摘要算法升级、或者你提高了 tier。
+
+反复重推会让流文件变长（追加模型的代价）。这件事自己会收：`sync push` 在文件明显超过
+"活着的大小"时把它重写成一条事实一行；想手动收就说 `batonpass sync compact <通道>`。
+重写会把 `heads` 里的 generation +1，读的一方看到新 generation 就从 0 重读一遍——
+安全，因为导入全是幂等的 `INSERT OR IGNORE`。实测：同一批 713 个会话推三次 1005 KB / 2139 行，
+compaction 后回到 335 KB / 713 行，pull 过来的库一字不差。
+
+### 通道放在网盘里，就顺手加密
+
+```bash
+export BATONPASS_KEY='你每台机器都会输入的这句'
+batonpass sync init ~/Nutstore/batonpass --encrypt
+```
+
+- 落盘的每个 payload 都先 AES-256-GCM 封好；通道里已有的 blob 会就地重封。
+- 密钥（scrypt 派生）**不进通道**：从 `BATONPASS_KEY` 或 `~/.batonpass/key` 第一行取。
+- 地址仍然是明文 sha256 → 同一条消息重传还是落到同一个路径，幂等没被破坏。
+- 口令不对时说一句人话（"这个通道是加密的，密钥对不上"），不会假装文件损坏。
+- **没封的只有目录行**（dedupe key 在里面）：网盘方能看到"你有 713 个会话、标题是这些、日期是这些"，
+  看不到一句正文。这个泄漏是真的，所以写在明面上。
+
+### 让 AI 工具直接查（可选）
+
+```bash
+batonpass mcp          # 在 stdio 上说 MCP，客户端自己起，退出后就没了
+```
+
+三个工具：`memory_search`（用模糊概念找）、`memory_add`（把刚学到的记下来，会出现在交接卡的"备注"里）、
+`resume`（把接力棒交给你）。配到 Claude Code / Cursor 的 MCP 配置里：
+
+```json
+{"mcpServers": {"batonpass": {"command": "uvx", "args": ["batonpass", "mcp"]}}}
+```
+
+找不到东西时它不会编：返回的是"not found — 别自己造一个"。
 
 ### 两台机器同时干同一件事会怎样
 

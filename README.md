@@ -119,6 +119,9 @@ picking one silently and losing the other.
 | `identity` | **shipped** — machine-independent project key, artifact refs, handover cards |
 | `index` · `find` | **shipped** — FTS5 trigram over everything you typed, with time windows |
 | `tasks` · `card` · `resume` | **shipped** — the handover packet, from a project name or a directory |
+| `sync compact` | **shipped** — a re-pushed stream collapses back to one line per fact |
+| `doctor` | **shipped** — every "why doesn't it work" turned into one line you can act on |
+| `mcp` | **shipped** — `memory_search` · `memory_add` · `resume` over stdio, for AI tools |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 
@@ -178,9 +181,65 @@ stick. Each machine appends only to *its own* file, so there is no lock, no lead
 no merge step, and pulling never writes into the channel. Everything is addressed by the
 sha256 of its plaintext, which is why the same line arriving twice is indistinguishable
 from it arriving once. The one cost of append-only: a re-pushed summary leaves the old
-line behind, and a reader takes the last one. Compaction is designed (`heads` carry a
-generation counter; a reader that sees a new generation restarts its offset from zero,
-which is safe precisely because inserts are idempotent) but not built yet.
+line behind, and a reader takes the last one. So a stream gets rewritten once it has
+grown past a floor — `sync compact` (and every push, when it is worth it):
+
+```
+3 pushes of the same 713 sessions  →  1005 KB · 2139 lines
+sync compact                       →   335 KB ·  713 lines   (one line per session)
+```
+
+Each rewrite bumps a generation counter in `heads/<device>.<tier>.json`. A reader keys
+its byte offset on the generation, so a rewritten file simply looks new and is read from
+zero — safe precisely because every import is an idempotent `INSERT OR IGNORE`.
+
+### When the channel is a cloud drive
+
+A folder on someone else's disk is a folder on someone else's disk. Say so at `init`:
+
+```bash
+export BATONPASS_KEY='the passphrase you will type on every machine'
+batonpass sync init ~/Nutstore/batonpass --encrypt
+```
+
+Every payload is sealed with AES-256-GCM before it lands on the drive, keyed by scrypt
+from that passphrase; blobs already in the channel are re-sealed in place. The key is
+never written into the channel — it comes from `BATONPASS_KEY` or `~/.batonpass/key`.
+Addressing stays on the plaintext sha256, so a re-sent message still lands on exactly the
+same path, and a wrong passphrase produces one sentence (*"this channel is encrypted and
+the key does not match"*) instead of a corrupt-archive mystery.
+
+What is **not** sealed: the catalog lines themselves, because dedupe keys live there. So
+the drive's operator can see that you had 713 sessions with these titles on these dates —
+not a word of what was said. That leak is real and small, and stating it is the point.
+
+If it ever doesn't work, it says why instead of throwing:
+
+```
+$ batonpass doctor --channel ~/Dropbox/batonpass
+OK    python       3.9.6
+OK    sqlite       3.54.0, fts5 + trigram
+WARN  zstd         not installed — archives stay readable, 2.50x becomes 2.04x
+             → pip install "batonpass[zstd]"
+OK    library      680.6 MB, 713 sessions, 263,256 messages
+OK    identity     12 named project key(s), 558 honestly ungrouped
+OK    channel      id c62264a7f0b4, 1 device(s), 0 B
+```
+
+### Letting the AI tools call it
+
+`batonpass mcp` is an MCP server on stdio — no daemon, no port, nothing left running
+when the client exits. Three tools, because that is the whole vocabulary an agent needs:
+`memory_search` (look something up by a vague phrase), `memory_add` (write down what it
+just learned, before it is forgotten), `resume` (hand the baton over).
+
+```json
+{"mcpServers": {"batonpass": {"command": "uvx", "args": ["batonpass", "mcp"]}}}
+```
+
+The silence contract applies here too: a search that finds nothing returns
+*"not found — do not invent one"*, because a model that hallucinates a file path costs
+you twenty minutes of looking for a file that never existed.
 
 If you run it and it *doesn't* recognise a source you use, that is the most useful bug
 report there is — please use the
