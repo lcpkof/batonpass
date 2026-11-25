@@ -192,10 +192,12 @@ for a schema fingerprint, not your data.
 ```bash
 uvx batonpass discover        # no install, runs from a temp env
 pipx run batonpass discover
-pip install batonpass         # or install it
+pip install "batonpass[zstd]"  # or install it, with the compressor
 ```
 
-Python 3.9+. Zero dependencies.
+Python 3.9+. Zero required dependencies — `zstandard` is the only extra, and it
+buys the 2.5× storage ratio. Without it, libraries written with zstd still
+refuse gracefully and tell you the one command to run.
 
 ## License
 
