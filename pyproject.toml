@@ -4,31 +4,46 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batonpass"
-version = "0.0.1"
-description = "Never drop the baton. Read-only inventory of the AI history on your machine, and a handoff you can carry to the next one."
+version = "0.2.0"
+description = "Never drop the baton. Read-only archive of the AI history on your machine, portable to the next one."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-dependencies = []
-
-keywords = ["ai", "agent", "transcript", "handoff", "memory", "cli", "sqlite"]
+authors = [{ name = "lcpkof" }]
+keywords = ["ai", "agent", "memory", "archive", "handoff", "sqlite", "read-only", "continuity"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
-  "Topic :: Utilities",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: System :: Archiving",
 ]
+dependencies = []
+
+[project.optional-dependencies]
+zstd = ["zstandard>=0.21"]
 
 [project.urls]
 Homepage = "https://github.com/lcpkof/batonpass"
 Issues = "https://github.com/lcpkof/batonpass/issues"
 
 [project.scripts]
-batonpass = "discover:main"
+batonpass = "batonpass.cli:main"
 
 [tool.setuptools]
-py-modules = ["discover"]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+batonpass = ["py.typed"]

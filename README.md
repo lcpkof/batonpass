@@ -13,10 +13,11 @@ join" — and you spend 20 minutes re-deriving what you already knew.
 last-week-you to today-you**, without the work touching the ground.
 
 ```
-batonpass discover      # what AI history is on this machine?  (read-only, 2 seconds)
-batonpass archive       # pull it into a portable library
-batonpass find "岗位表"  # search it, with time windows: --at 7d
-batonpass resume        # build a handover packet for a fresh machine
+batonpass discover              # what AI history is on this machine?  (read-only, 2 s)
+batonpass archive               # pull it into a portable library  (~1 min per GB)
+batonpass export <session> --text   # read one conversation back out
+batonpass find "岗位表" --at 7d      # search it, with time windows   (next)
+batonpass resume                # handover packet for a fresh machine (next)
 ```
 
 ---
@@ -106,9 +107,26 @@ picking one silently and losing the other.
 
 ## Status
 
-`discover` works today and is the first public commit. Archive, sync and resume are
-designed and specified in [`docs/design-v1.md`](docs/design-v1.md) (every table, every
-wire format, every acceptance criterion) and land in that order.
+| verb | state |
+|---|---|
+| `discover` | **shipped** — read-only inventory, ~2 s, one HTML page |
+| `archive` | **shipped** — five adapters, replay-safe (re-run adds 0 rows) |
+| `find` · `resume` · `sync` | designed in [`docs/design-v1.md`](docs/design-v1.md), landing next |
+
+`archive`, measured end-to-end on this machine — all five sources, one pass:
+
+```
+712 sessions · 261,310 messages · 484,573 parts · 52 s
+2.2 GB of source databases   →   466 MB portable library
+448 MB of plaintext          →   179.5 MB stored   (2.50×, trained dict + zstd-19)
+```
+
+The number that matters more than the ratio: **running it again adds zero rows.**
+Counts reconcile against the sources exactly — 304/304 sessions, 48,168/48,168
+messages — and parts match once you account for the 72,184 `step-start` /
+`step-finish` rows it skips *by name*. A message with no prose (a tool call, a
+reasoning block) becomes a structured part instead of being thrown away. Nothing is
+dropped silently; anything unaudited is reported as a number you can argue with.
 
 If you run it and it *doesn't* recognise a source you use, that is the most useful bug
 report there is — please use the
