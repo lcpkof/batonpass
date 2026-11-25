@@ -176,8 +176,10 @@ def _apply_t2(conn, channel, codecs, o, stat):
         mid, seq = o.get("mid"), int(o.get("seq") or 0)
         _import_blob(conn, channel, o.get("ah"), codecs, source, stat)
         _import_blob(conn, channel, o.get("rh"), codecs, source, stat)
+        # `e` is how a part's error flag travelled before the line itself got
+        # sealed; keep reading it so an older channel still imports correctly.
         if put_part(conn, part_key(mid, seq), mid, seq, o.get("pk"), o.get("nm"),
-                    o.get("ah"), o.get("rh"), o.get("e"), o.get("ts")):
+                    o.get("ah"), o.get("rh"), o.get("is_err", o.get("e")), o.get("ts")):
             stat["parts_new"] += 1
 
 

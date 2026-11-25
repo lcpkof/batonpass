@@ -5,12 +5,16 @@ shared volume or a USB stick. That is also the whole reason it needs this file:
 whatever that drive's operator can read, they can read. So the payload is sealed
 before it is written, and the channel marker says so.
 
-What is sealed: every blob — message bodies, tool calls, the bulk of the bytes.
-What is not: the catalog lines themselves (`stream/*/t0.jsonl`), because that is
-where the dedupe keys live and objects have to stay comparable for compaction to
-work. So an operator of the drive learns *that* you had 713 sessions with these
-titles on these dates, not what was said in them. That is a real, small leak and
-it is stated here rather than implied away.
+What is sealed: every blob — message bodies, tool calls, the bulk of the bytes —
+and the body of every stream line. A line keeps only its identity in the clear
+(`v`, tier, session id, message/part position), because compaction has to tell
+two facts apart without a key; everything a line *says* travels in `d`. So an
+operator of the drive learns that some machine had 713 sessions of these sizes
+at these times, and not one word of them.
+
+What is not sealed: the file names of blobs, which are the plaintext sha256 —
+someone holding a known text can confirm it is in the channel. That is a
+content-confirmation leak, not a content leak, and it is what buys idempotency.
 
 Addressing stays on the plaintext sha256, so idempotency survives. The trade is
 that someone holding a known plaintext can confirm it is in the channel — a

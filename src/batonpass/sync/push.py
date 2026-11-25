@@ -196,7 +196,7 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
         try:
             stat["sessions_sent"] += 1
             if need_meta and (stale or meta_tier < 0):
-                t0_buf.append(wire.pack(_t0(row)))
+                t0_buf.append(_t0(row))
 
             if need_meta and tier >= 1 and (stale or meta_tier < 1):
                 # The summary carries its text inline. Sending it as blobs too
@@ -211,7 +211,7 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
                     stat["redacted"] += n
                 if refs:
                     line["refs"] = refs
-                t1_buf.append(wire.pack(line))
+                t1_buf.append(line)
 
             if need_bodies:
                 stat["messages"] += _push_messages(
@@ -268,10 +268,10 @@ def _push_messages(conn, ckey, channel, codecs, sid, source, buf, stat) -> int:
         " WHERE sid=? AND seq>? ORDER BY seq", (sid, already)
     ).fetchall()
     for m in rows:
-        buf.append(wire.pack({
+        buf.append({
             "v": wire.WIRE_VERSION, "t": 2, "k": "m", "sid": sid, "seq": m[0],
             "r": m[1], "th": m[2], "mo": m[3], "ts": m[4], "mj": m[5],
-        }))
+        })
         n += 1
         _ship_blob(channel, codecs, source, m[2], stat)
         mid = message_key(sid, m[0])
@@ -279,11 +279,11 @@ def _push_messages(conn, ckey, channel, codecs, sid, source, buf, stat) -> int:
             "SELECT seq,kind,name,args_sha,result_sha,is_error,ts FROM part"
             " WHERE mid=? ORDER BY seq", (mid,)
         ):
-            buf.append(wire.pack({
+            buf.append({
                 "v": wire.WIRE_VERSION, "t": 2, "k": "p", "mid": mid, "sid": sid,
                 "seq": p[0], "pk": p[1], "nm": p[2], "ah": p[3], "rh": p[4],
-                "e": p[5], "ts": p[6],
-            }))
+                "is_err": p[5], "ts": p[6],
+            })
             stat["parts"] += 1
             _ship_blob(channel, codecs, source, p[3], stat)
             _ship_blob(channel, codecs, source, p[4], stat)

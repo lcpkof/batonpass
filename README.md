@@ -221,9 +221,17 @@ Addressing stays on the plaintext sha256, so a re-sent message still lands on ex
 same path, and a wrong passphrase produces one sentence (*"this channel is encrypted and
 the key does not match"*) instead of a corrupt-archive mystery.
 
-What is **not** sealed: the catalog lines themselves, because dedupe keys live there. So
-the drive's operator can see that you had 713 sessions with these titles on these dates —
-not a word of what was said. That leak is real and small, and stating it is the point.
+The stream lines are sealed too, not just the blobs. A line keeps only its identity in the
+clear — wire version, tier, session id, message position — because compaction has to tell
+two facts apart without a key; everything it *says* travels in `d`. On the first real
+channel that meant 716 sessions of prose in 4.2 MB with zero readable characters in it.
+
+What is **not** sealed: the file names of blobs, which are the plaintext sha256. Someone
+holding a known text can confirm it is in the channel. That is a content-confirmation leak,
+not a content leak, and it is what buys idempotency. Stating it is the point.
+
+Sealed lines are wire v2, so upgrade every machine before you seal a channel — a newer
+reader refuses an older channel politely; an older reader would misread a sealed one.
 
 If it ever doesn't work, it says why instead of throwing:
 
