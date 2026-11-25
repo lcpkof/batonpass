@@ -128,8 +128,12 @@ def tool_search(conn, args) -> str:
                   limit=int(args.get("limit") or 5))
     if not hits:
         # The silence contract: nothing found is said out loud, never papered over.
-        return ("not found — no session on this machine matches %r. Do not invent one; "
-                "say you could not find it." % q)
+        msg = ("not found — no session on this machine matches %r. Do not invent one; "
+               "say you could not find it." % q)
+        from .recall import undecodable_hint
+
+        hint = undecodable_hint(conn)
+        return msg + ("\n" + hint if hint else "")
     out = ["%d session(s) match %r" % (len(hits), q)]
     for h in hits:
         out.append("")

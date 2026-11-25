@@ -222,8 +222,15 @@ def cmd_sync(args):
         if st["tier"] >= 2:
             print("  %d messages, %d parts" % (st["messages"], st["parts"]))
         print("  blobs: %d new, %s" % (st["blobs_new"], _fmt_bytes(st["blob_bytes"])))
-        for e in st["errors"]:
+        shown = st["errors"][:5]          # five of the same sentence is enough
+        for e in shown:
             print("  ERROR %s" % e)
+        if len(st["errors"]) > len(shown):
+            print("  … and %d more, same reason" % (len(st["errors"]) - len(shown)))
+        if st["errors"]:
+            print("\n  %d blob(s) stayed behind. The channel carries what this machine "
+                  "could read,\n  so it is smaller than the library, not wrong — "
+                  "`batonpass doctor` names the missing piece." % len(st["errors"]))
         return 0 if not st["errors"] else 1
 
     st = pull(channel, tier=args.tier, device=args.device, conn=conn, sid_prefix=args.sid)
@@ -283,7 +290,10 @@ def cmd_find(args):
         # The silence contract: never invent a hit to look helpful.
         print("nothing matched %r%s" % (
             args.query, " in " + args.at if args.at else ""))
-        print("try: a shorter word · batonpass tasks · drop --at")
+        from .recall import undecodable_hint
+
+        hint = undecodable_hint(conn)
+        print(hint or "try: a shorter word · batonpass tasks · drop --at")
         return 1
     print("%d hit%s%s" % (len(hits), "" if len(hits) == 1 else "s",
                           "  (window %s)" % args.at if args.at else ""))
