@@ -93,6 +93,28 @@ class SyncBetweenTwoMachines(unittest.TestCase):
         self.assertIn("记忆中枢", head["one_line"])
         self.assertIn("那就开始吧", head["head_json"])
 
+    def test_a_better_summariser_reaches_an_old_channel(self):
+        """Bumping SUMMARY_VER must re-send prose that tier 1 already has.
+
+        Otherwise a fix to the summariser (or to what it redacts) can never
+        reach a channel that was pushed before it.
+        """
+        import importlib
+
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        mod = importlib.import_module("batonpass.sync.push")
+        old = mod.SUMMARY_VER
+        mod.SUMMARY_VER = old + 1
+        try:
+            st = push(self.channel, tier=1, device="alpha", conn=self.a)
+        finally:
+            mod.SUMMARY_VER = old
+        self.assertEqual(1, st["sessions_sent"])
+        self.assertEqual(1, st["lines"][1])
+        path = os.path.join(self.channel, "stream", "alpha", "t1.jsonl")
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(2, len([ln for ln in fh if ln.strip()]))
+
     def test_the_files_ride_with_the_summary_not_with_the_bodies(self):
         """A card that cannot name your files is a card about a task, not the task."""
         import json as _json

@@ -182,17 +182,23 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
         # catalog entry and a t1 line is the prose a new machine actually reads.
         meta_tier = _sync_get(conn, ckey, "sent_meta:" + sid)
         meta_tier = -1 if meta_tier is None else int(meta_tier)
-        need_meta = _sync_get(conn, ckey, "sent:" + sid) != sig or meta_tier < tier
+        # `stale` means the catalog entry or the prose itself has to be rebuilt
+        # (the session grew, or the summariser changed — a redaction rule is a
+        # summariser change). `behind` means this tier was never sent. A stale
+        # session re-sends its prose even if a higher tier was sent before;
+        # that is the only way a fixed summariser reaches an old channel.
+        stale = _sync_get(conn, ckey, "sent:" + sid) != sig
+        need_meta = stale or meta_tier < tier
         need_bodies = tier >= 2 and last_tier < tier
         if not need_meta and not need_bodies:
             stat["skipped"] += 1
             continue
         try:
             stat["sessions_sent"] += 1
-            if need_meta and meta_tier < 0:
+            if need_meta and (stale or meta_tier < 0):
                 t0_buf.append(wire.pack(_t0(row)))
 
-            if need_meta and tier >= 1 and meta_tier < 1:
+            if need_meta and tier >= 1 and (stale or meta_tier < 1):
                 # The summary carries its text inline. Sending it as blobs too
                 # would mean thousands of 700-byte files, and a filesystem
                 # charges a 4 KB block for each of them.
