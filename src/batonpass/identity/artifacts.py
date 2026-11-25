@@ -86,6 +86,7 @@ STOP_TOKENS = {
     "输出", "附件", "下载", "上传", "已", "完成", "更新", "查看", "here", "file",
     "the", "see", "and", "to", "into", "from", "for", "with", "saved", "saving",
     "做了", "做到了", "存到", "保存为", "写入到", "文件是", "这里是",
+    "且", "并且", "还有", "另见", "详见", "参见", "参考", "注意", "继续读",
     "save", "as", "new", "existing", "or", "and", "then", "with", "a", "an",
     "creating", "editing", "restyling", "generating", "writing", "reading",
     "saving", "uploading", "downloading", "fixing", "fix", "update", "updating",
@@ -96,7 +97,7 @@ STOP_TOKENS = {
 # sessions in ~6 s) while a stale ref list is permanent — merging only ever
 # adds, so an improved extractor would otherwise never be able to *remove* the
 # `README.md` it used to believe in.
-ARTIFACT_VER = "3"
+ARTIFACT_VER = "5"
 
 MAX_REFS = 24
 MAX_DEPTH = 6
@@ -116,14 +117,26 @@ def _ok_name(name: str) -> bool:
     # `streamlit.components.v1.html` is a module path, not a file you can open.
     if base.count(".") > 2:
         return False
+    # `state.json trades.csv` is two filenames separated by a space, and the
+    # space is allowed *inside* a name (`报告 2026.xlsx`), so the tell is the
+    # text that follows a complete extension: a real name never resumes after
+    # its own extension.
+    if re.search(r"\.[A-Za-z0-9]{1,5}\s+\S", base):
+        return False
     # `1.png` / `a.md` are counters and headings, not deliverables.
     if len(base.rsplit(".", 1)[0]) < 2:
         return False
     return True
 
 
+# Words that join two names. They are separators, not part of a name, and the
+# two sides are two deliverables: "岗位表 2026.xlsx 和 汇总表 2026.xlsx" is a pair,
+# not a file called "岗位表 2026.xlsx 汇总表 2026.xlsx".
+_REL_SPLIT = re.compile(
+    r"\s+(?:至|到|和|与|及|或|以及|然后|to|and|or|through|until|then|into)\s+", re.I)
+
 _CJK_VERB = re.compile(
-    r"^(看|请|帮|把|给|要|想|能|可|让|叫|试|先|再|并|和|与|或|至|到|于|从|在|用|对|为|是|有|没|未|已|加|改|写|读|删|传|存|导|做|放|发|跑|禁止|不要|请勿|别|只|仅)"
+    r"^(看|请|帮|把|给|要|想|能|可|让|叫|试|先|再|并|和|与|或|至|到|于|从|在|用|对|为|是|有|没|未|已|加|改|写|读|删|传|存|导|做|放|发|跑|禁止|不要|请勿|别|只|仅|继续|继续读|注意|且|并且|还有|另见|详见|参见|参考|重读|补|补充)"
 )
 
 
@@ -160,10 +173,11 @@ def names_in_text(text: str) -> list:
     """
     out, seen = [], set()
     for m in NAME_RE.finditer(text or ""):
-        name = _strip_stopwords(m.group(1).strip())
-        if _ok_name(name) and name not in seen:
-            seen.add(name)
-            out.append(name)
+        for piece in _REL_SPLIT.split(m.group(1).strip()):
+            name = _strip_stopwords(piece.strip())
+            if _ok_name(name) and name not in seen:
+                seen.add(name)
+                out.append(name)
     return out
 
 

@@ -97,6 +97,16 @@ class ArtifactTest(unittest.TestCase):
         self.assertEqual(af.names_in_text("or fix an existing .xlsx"), [])
         self.assertEqual(af.names_in_text("streamlit.components.v1.html"), [])
 
+    def test_two_filenames_joined_by_a_space_are_not_one(self):
+        # `state.json trades.csv` is a pair, and the merged string is neither.
+        self.assertEqual(af.names_in_text("禁止修改 state.json trades.csv"), [])
+
+    def test_a_relational_word_splits_a_pair(self):
+        self.assertEqual(af.names_in_text("加 card-1 至 card-5.png"), ["card-5.png"])
+        self.assertEqual(
+            af.names_in_text("更新 岗位表 2026.xlsx 和 汇总表 2026.xlsx"),
+            ["岗位表 2026.xlsx", "汇总表 2026.xlsx"])
+
     def test_repo_furniture_is_ignored(self):
         self.assertEqual(af.names_in_text("见 README.md 与 pyproject.toml"), [])
         self.assertEqual(af.names_in_text("打开 CLAUDE.md"), [])
