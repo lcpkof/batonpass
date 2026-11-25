@@ -100,6 +100,12 @@ task, which file — in about two seconds, and then pulls transcripts *for the t
 actually continuing*. Measured on real data: `message.data` gzips 5.43 MB → 0.80 MB and
 zstd-19s to **0.28 MB (19.7×)**. You don't need the other 250 MB to keep working.
 
+The summary tier is also the tier that goes everywhere — a USB stick, a shared NAS, your
+iCloud folder — so it's the tier that gets scrubbed: keys, tokens and PEM blocks pasted
+into a chat are replaced with `sk-<redacted>` on the way out. Your own library still has
+the raw text, because `export` should tell you what was actually said. (On our first real
+channel this caught 32 credentials, including one live key from a chat six months old.)
+
 ## Why a baton, and not a sync
 
 When you're mid-task on two machines, the second machine doesn't need a *merge*, it needs
