@@ -140,10 +140,19 @@ dropped silently; anything unaudited is reported as a number you can argue with.
 ```
 713 sessions                →  12 real projects · 558 honestly ungrouped
                                 57 sessions folded into `xueji`, 50 into `gp`
-6,512 deliverables          →  found in 575 sessions (xlsx, csv, pdf, png, md…)
+6,479 deliverables          →  found in 575 sessions (xlsx, csv, pdf, png, md…)
 58,508 messages indexed     →  16.6 s one-off · 164 MB · 59212 docs
 batonpass find 岗位表        →  one hit, with the sentence it appeared in
 batonpass find 妖族          →  nothing   (it never appears — 妖股 does)
+```
+
+And the round trip, on a machine that has never seen the data — it pulls 356 KB
+of catalog (t0) and can already say what is in flight:
+
+```
+pull t0                     →  713 sessions, 713 new, 0.04 s
+batonpass tasks             →  12 projects, sizes, devices, stale marks
+batonpass card xueji        →  the same card, forks and all
 ```
 
 The ungrouped 558 are the point. Every one of them had a session title that looked
