@@ -54,6 +54,18 @@ def _put_head(conn, o):
         (o.get("sid"), o.get("dev"), o.get("one"), wire.pack({"head": o.get("head")}),
          int(o.get("n") or 0)),
     )
+    # A card is only as good as the files it can name, and those arrive with the
+    # summary rather than with the bodies — so a tier-1 pull still knows what you
+    # produced, even on a machine that has none of the messages yet.
+    refs = o.get("refs") or []
+    if refs:
+        from ..identity.artifacts import merge_refs
+
+        cur = conn.execute("SELECT artifact_refs FROM session WHERE sid=?",
+                           (o.get("sid"),)).fetchone()
+        merged = merge_refs(cur[0] if cur else "", refs)
+        conn.execute("UPDATE session SET artifact_refs=? WHERE sid=?",
+                     (merged, o.get("sid")))
 
 
 def _import_blob(conn, channel, sha, codecs, source, stat):

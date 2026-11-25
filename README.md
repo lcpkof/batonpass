@@ -169,9 +169,10 @@ second library that has never seen any of those apps:
 ```
 library 528 MB              →   channel 2.8 MB      push 713 sessions in 2.0 s
                                    t0 catalog   356 KB
-                                   t1 summaries 2.43 MB
+                                   t1 summaries 2.70 MB  (incl. the files each session produced)
 fresh machine reads t0        0.04 s   → 713 sessions, 0 messages
-              then t1         0.05 s   → every session has a first ask and its last rounds
+              then t1         0.05 s   → every session has a first ask, its last rounds,
+                                          and the files it produced
 deep-pull one task            0.14 s   → 64 messages, 256 parts, 317 blobs
 verify: 64/64 message hashes identical, 0 bodies differ
 ```

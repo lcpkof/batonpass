@@ -78,6 +78,24 @@ class SyncBetweenTwoMachines(unittest.TestCase):
         self.assertIn("记忆中枢", head["one_line"])
         self.assertIn("那就开始吧", head["head_json"])
 
+    def test_the_files_ride_with_the_summary_not_with_the_bodies(self):
+        """A card that cannot name your files is a card about a task, not the task."""
+        import json as _json
+
+        refs = [{"name": "岗位表.xlsx", "ts": "2026-11-20T10:00:00Z", "via": "text"},
+                {"name": "封面.png", "ts": "2026-11-20T09:00:00Z", "via": "tool"}]
+        self.a.execute("UPDATE session SET artifact_refs=? WHERE sid=?",
+                       (_json.dumps(refs), self.sid))
+        self.a.commit()
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        pull(self.channel, tier=1, device="beta", conn=self.b)
+        got = self.b.execute("SELECT artifact_refs FROM session WHERE sid=?",
+                             (self.sid,)).fetchone()["artifact_refs"]
+        self.assertEqual({r["name"] for r in _json.loads(got)},
+                         {"岗位表.xlsx", "封面.png"})
+        # …and still zero message bodies: tier 1 is a summary, not a transcript.
+        self.assertEqual(self.b.execute("SELECT COUNT(*) FROM message").fetchone()[0], 0)
+
     def test_deep_pull_of_one_task_is_byte_identical(self):
         push(self.channel, tier=2, device="alpha", conn=self.a)
         pull(self.channel, tier=0, device="beta", conn=self.b)
@@ -127,11 +145,6 @@ class SyncBetweenTwoMachines(unittest.TestCase):
         pull(self.channel, tier=1, device="beta", conn=self.b)
         after = {s["tier"]: s["pending"] for s in status(self.channel, self.b)["streams"]}
         self.assertEqual(after["t1"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CompactionNeverLosesAFact(unittest.TestCase):
     """A stream may be re-sent forever; what it *means* must not grow with it.
@@ -191,3 +204,7 @@ class CompactionNeverLosesAFact(unittest.TestCase):
         out = ch.compact(self.channel, "alpha", "t2")
         self.assertFalse(out["compacted"])
         self.assertEqual(ch.read_head(self.channel, "alpha", "t2"), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

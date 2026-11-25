@@ -191,6 +191,20 @@ def cmd_sync(args):
         if not st["exists"]:
             print("  (no channel here yet — run `batonpass sync init %s`)" % channel)
             return 1
+        # Which channel is this, and can anyone read it? Both answers change what
+        # you do next, and neither is visible from the folder listing.
+        print("  identity %s" % (st.get("channel_id") or "?")[:12])
+        from .sync import crypt
+
+        m = crypt.marker(channel)
+        if m.get("enc"):
+            try:
+                print("  sealed   %s, key %s" % (m["enc"], crypt.fingerprint(channel)))
+            except RuntimeError:
+                print("  sealed   %s, but this machine has no key — the blobs stay closed"
+                      % m["enc"])
+        else:
+            print("  sealed   no (anyone holding this folder can read it)")
         print("\ndevices")
         for d in st["devices"]:
             print("  %-16s last seen %s  pushes %s" % (

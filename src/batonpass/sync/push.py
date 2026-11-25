@@ -17,6 +17,7 @@ raised is *not* marked as sent, so the next push retries it.
 
 from __future__ import annotations
 
+import json
 import os
 
 from .. import __version__
@@ -27,6 +28,7 @@ from . import channel as ch
 from . import wire
 
 SUMMARY_VER = 3
+MAX_T1_REFS = 12          # 24 is the cap the identity layer keeps; a card shows five
 HEAD_PER_ROLE = 3
 HEAD_CHARS = 600
 ONE_LINE_CHARS = 160
@@ -82,6 +84,26 @@ def _t0(row) -> dict:
         "parent": row["forked_from"], "av": row["adapter_ver"],
         "ch": row["content_hash"],
     }
+
+
+def _t1_refs(row) -> list:
+    """The files a session produced, small enough to ride along with its summary.
+
+    A handover card without its files is a card about a task rather than the task:
+    you arrive on the new machine, the card says what you were doing, and then it
+    cannot tell you which document you were writing. The refs live in the session
+    row, so they cost nothing extra to send — just bytes on the wire.
+    """
+    raw = row["artifact_refs"]
+    if not raw:
+        return []
+    try:
+        refs = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    keep = ("name", "ts", "via")     # rank() only needs the name; `via` says how we know
+    return [{k: r[k] for k in keep if k in r}
+            for r in refs[:MAX_T1_REFS] if isinstance(r, dict) and r.get("name")]
 
 
 def _head_prose(conn, codecs, sid, source) -> tuple:
@@ -161,10 +183,12 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
                 # would mean thousands of 700-byte files, and a filesystem
                 # charges a 4 KB block for each of them.
                 one_line, head = _head_prose(conn, codecs, sid, source)
-                t1_buf.append(wire.pack({
-                    "v": wire.WIRE_VERSION, "t": 1, "sid": sid, "one": one_line,
-                    "head": head, "n": n_msg,
-                }))
+                line = {"v": wire.WIRE_VERSION, "t": 1, "sid": sid, "one": one_line,
+                        "head": head, "n": n_msg}
+                refs = _t1_refs(row)
+                if refs:
+                    line["refs"] = refs
+                t1_buf.append(wire.pack(line))
 
             if need_bodies:
                 stat["messages"] += _push_messages(
