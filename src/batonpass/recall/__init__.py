@@ -16,6 +16,10 @@ def undecodable_hint(conn) -> str:
     codec this machine cannot decode, or the text never travelled at all (a tier-1
     pull carries summaries, not transcripts). In both cases "nothing matched" is
     literally true and completely misleading, so the sentence says which one it is.
+
+    The test for the second case is *message rows*, not index documents: a summary
+    library is searchable — it has one document per session — and that is exactly
+    how a miss there stays silent when it should not.
     """
     from ..store.content import HAVE_ZSTD
 
@@ -29,15 +33,13 @@ def undecodable_hint(conn) -> str:
         return ('(%d stored texts cannot be read without zstandard — '
                 'pip install "batonpass[zstd]")' % n)
     try:
-        docs = conn.execute("SELECT COUNT(*) FROM search_fts").fetchone()[0]
-    except Exception:            # no index tables yet: nothing has been searchable
-        docs = 0
-    try:
         sess = conn.execute(
             "SELECT COUNT(*) FROM session WHERE msg_count > 0").fetchone()[0]
-    except Exception:
+        bodies = conn.execute("SELECT COUNT(*) FROM message").fetchone()[0]
+    except Exception:            # a library too young for these tables
         return ""
-    if sess and not docs:
-        return ("(%d session(s) are on record, but none of their text is in this "
-                "library — pull deeper: batonpass sync pull PATH --tier 2)" % sess)
+    if sess and not bodies:
+        return ("(%d session(s) are on record here, but not one message — this "
+                "library holds summaries only. Pull deeper: "
+                "batonpass sync pull PATH --tier 2)" % sess)
     return ""
