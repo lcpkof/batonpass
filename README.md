@@ -1,5 +1,10 @@
 # batonpass
 
+[![PyPI](https://img.shields.io/pypi/v/batonpass-cli)](https://pypi.org/project/batonpass-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/batonpass-cli)](https://pypi.org/project/batonpass-cli/)
+[![License](https://img.shields.io/pypi/l/batonpass-cli)](LICENSE)
+[![CI](https://github.com/lcpkof/batonpass/actions/workflows/ci.yml/badge.svg)](https://github.com/lcpkof/batonpass/actions/workflows/ci.yml)
+
 > **Never drop the baton.**
 > Switch machines mid-task — your work picks up exactly where you left it.
 
