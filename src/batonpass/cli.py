@@ -91,7 +91,14 @@ def cmd_stats(args):
     print("sessions    %d" % st["sessions"])
     print("messages    %d" % st["messages"])
     print("parts       %d" % st["parts"])
-    print("raw         %d records from %d sources" % (st["raw_records"], st["raw_sources"]))
+    if st["raw_records"]:
+        print("raw         %d records from %d sources" % (
+            st["raw_records"], st["raw_sources"]))
+    else:
+        # Level 1 keeps the parsed rows and drops the raw blobs; "0 records" reads
+        # like a bug when it is the level you chose.
+        print("raw         not copied (level 1 keeps parsed rows; "
+              "`archive --level 2` also keeps the originals)")
     print("plaintext   %s in %d unique blobs" % (_fmt_bytes(st["plain_bytes"]), st["content_unique"]))
     print("stored      %s  (%.2fx)" % (_fmt_bytes(st["stored_bytes"]), st["ratio"]))
     print("library     %s" % _fmt_bytes(st["db_bytes"]))
