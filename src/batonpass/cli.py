@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 
@@ -107,6 +108,24 @@ def cmd_stats(args):
     return 0
 
 
+def cmd_mcp(args):
+    from . import mcp
+
+    # stdout is the protocol: nothing else may be printed to it.
+    return mcp.serve(db_path=args.db)
+
+
+def cmd_doctor(args):
+    from . import doctor
+
+    res = doctor.run(db_path=args.db, channel=args.channel, sources=args.sources)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(doctor.render(res))
+    return 1 if any(c["level"] == doctor.FAIL for c in res["checks"]) else 0
+
+
 def cmd_sync(args):
     from .store.db import connect, db_path
     from .sync import init_channel, pull, push, status
@@ -119,7 +138,47 @@ def cmd_sync(args):
         info = init_channel(channel, device=args.device or device_name())
         print("channel  %s" % info["path"])
         print("device   %s" % (args.device or device_name()))
+        if getattr(args, "encrypt", False):
+            from .sync import crypt
+
+            try:
+                res = crypt.enable(channel)
+            except RuntimeError as e:
+                print("\nencryption not enabled: %s" % e)
+                return 2
+            print("sealed   %s · %s key %s" % (
+                "already" if res["already"] else "yes", crypt.ALGO,
+                crypt.fingerprint(channel)))
+            if res["sealed"]:
+                print("         %d blob(s) already in the channel were re-sealed" %
+                      res["sealed"])
+            print("passphrase is not in the channel: keep BATONPASS_KEY set on "
+                  "every machine, or the blobs stay closed")
         print("\nnothing left to do — `batonpass sync push %s` fills it" % channel)
+        return 0
+
+    if action == "compact":
+        from .sync import channel as ch
+
+        devs = [args.device or device_name()]
+        sdir = os.path.join(os.path.expanduser(channel), "stream")
+        if args.all and os.path.isdir(sdir):
+            devs = sorted(x for x in os.listdir(sdir)
+                          if os.path.isdir(os.path.join(sdir, x)))
+        tiers = ["t0", "t1", "t2"] if args.tier is None else ["t%d" % args.tier]
+        rows = [ch.compact(channel, d, t, force=args.force)
+                for d in devs for t in tiers]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+            return 0
+        for r in rows:
+            if not r["compacted"]:
+                print("  %-16s %s %8s  unchanged (%s)" % (
+                    r["device"], r["tier"], _fmt_bytes(r["before"]), r.get("reason")))
+                continue
+            print("  %-16s %s %8s → %8s  gen %d  %s lines" % (
+                r["device"], r["tier"], _fmt_bytes(r["before"]), _fmt_bytes(r["after"]),
+                r["gen"], format(r.get("lines_after", 0), ",")))
         return 0
 
     if action == "status":
@@ -373,6 +432,19 @@ def build_parser():
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_stats)
 
+    m = sub.add_parser("mcp", help="run the MCP server on stdio (three tools)")
+    m.add_argument("--db", default=None)
+    m.set_defaults(func=cmd_mcp)
+
+    d = sub.add_parser("doctor", help="check that everything can actually work")
+    d.add_argument("--db", default=None)
+    d.add_argument("--channel", default=None,
+                   help="also check a channel folder")
+    d.add_argument("--sources", action="store_true",
+                   help="also scan the machine for sources (a few seconds)")
+    d.add_argument("--json", action="store_true")
+    d.set_defaults(func=cmd_doctor)
+
     y = sub.add_parser("sync", help="exchange history with your other machines")
     ysub = y.add_subparsers(dest="action")
     for name, hlp in (("init", "create a channel folder"),
@@ -382,6 +454,9 @@ def build_parser():
         q.add_argument("--device", default=None)
         q.add_argument("--db", default=None)
         q.add_argument("--json", action="store_true")
+        if name == "init":
+            q.add_argument("--encrypt", action="store_true",
+                           help="seal the payload with a passphrase (BATONPASS_KEY)")
         q.set_defaults(func=cmd_sync)
     for name, hlp in (("push", "write this machine's history into the channel"),
                       ("pull", "read the channel into this machine's library")):
@@ -395,6 +470,17 @@ def build_parser():
         q.add_argument("--db", default=None)
         q.add_argument("--json", action="store_true")
         q.set_defaults(func=cmd_sync)
+    q = ysub.add_parser("compact",
+                        help="rewrite a stream as the set of facts it holds")
+    q.add_argument("channel")
+    q.add_argument("--tier", type=int, default=None, choices=[0, 1, 2])
+    q.add_argument("--device", default=None)
+    q.add_argument("--all", action="store_true",
+                   help="every device's file, not just this machine's")
+    q.add_argument("--force", action="store_true", help="ignore the size thresholds")
+    q.add_argument("--db", default=None)
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=cmd_sync)
     y.set_defaults(func=None)
 
     i = sub.add_parser("index", help="build the local search index (never synced)")
