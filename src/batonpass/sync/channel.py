@@ -17,6 +17,8 @@ import socket
 import uuid
 from datetime import datetime, timezone
 
+from . import wire
+
 MARKER = "batonpass-channel.json"
 SCHEMA = 1
 
@@ -128,22 +130,71 @@ def devices(channel: str) -> list:
 def write_head(channel: str, device: str, tier: str, stats: dict) -> dict:
     """Each tier's own head file: how far this device has written, and its hash."""
     path = os.path.join(channel, "heads", "%s.%s.json" % (device, tier))
-    prev = {}
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                prev = json.load(fh)
-        except ValueError:
-            prev = {}
+    prev = read_head(channel, device, tier)
     head = {
         "device": device,
         "tier": tier,
+        "gen": int(prev.get("gen") or 0),
         "lines": int(prev.get("lines") or 0) + int(stats.get("lines") or 0),
-        "bytes": int(prev.get("bytes") or 0) + int(stats.get("bytes") or 0),
+        "bytes": wire.stream_bytes(channel, device, tier),
+        "live_bytes": int(prev.get("live_bytes") or 0),
         "updated": now_iso(),
     }
     _atomic_json(path, head)
     return head
+
+
+def read_head(channel: str, device: str, tier: str) -> dict:
+    path = os.path.join(channel, "heads", "%s.%s.json" % (device, tier))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+# A stream is allowed to grow before it gets rewritten. Rewriting on every push
+# would mean fsyncing the whole file every time; the point is to stop unbounded
+# growth, not to keep the file minimal.
+COMPACT_MIN = {"t0": 512 * 1024, "t1": 4 * 1024 * 1024, "t2": 32 * 1024 * 1024}
+
+
+def compact(channel: str, device: str, tier: str, force: bool = False) -> dict:
+    """Rewrite one device's stream as the set of facts it describes.
+
+    The generation goes up, so every reader's offset — which is keyed on the
+    generation — stops applying and the file is re-read from zero. Re-reading
+    is safe by construction: imports are idempotent.
+    """
+    head = read_head(channel, device, tier)
+    size = wire.stream_bytes(channel, device, tier)
+    out = {"device": device, "tier": tier, "before": size, "after": size,
+           "gen": int(head.get("gen") or 0), "compacted": False}
+    if not os.path.exists(wire.stream_path(channel, device, tier)):
+        out["reason"] = "empty"            # never a head file for a file that isn't there
+        return out
+    if not force:
+        if size <= COMPACT_MIN.get(tier, 4 * 1024 * 1024):
+            out["reason"] = "small"
+            return out
+        live = int(head.get("live_bytes") or 0)
+        if live and size < 2 * live:
+            out["reason"] = "not worth it yet"
+            return out
+    res = wire.compact_stream(channel, device, tier)
+    head = {
+        "device": device, "tier": tier,
+        "gen": int(head.get("gen") or 0) + 1,
+        "lines": res["lines_after"],
+        "bytes": res["after"],
+        "live_bytes": res["after"],
+        "compacted_at": now_iso(),
+        "updated": now_iso(),
+    }
+    _atomic_json(os.path.join(channel, "heads", "%s.%s.json" % (device, tier)), head)
+    out.update({"after": res["after"], "gen": head["gen"], "compacted": True,
+                "lines_before": res["lines_before"], "lines_after": res["lines_after"]})
+    return out
 
 
 def read_heads(channel: str) -> list:

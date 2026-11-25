@@ -108,9 +108,18 @@ def pull(channel: str, tier: int = 0, device: str = None, conn=None,
         stat["devices"].append(dev)
         for t in range(0, tier + 1):
             tier_name = "t%d" % t
-            key = "pull:%s:%s" % (dev, tier_name)
+            # The offset belongs to a *generation* of the file, not to the file.
+            # A compacted stream (gen+1) therefore looks brand new and is read
+            # from zero — which is safe, because every import is idempotent.
+            gen = int(ch.read_head(channel, dev, tier_name).get("gen") or 0)
+            key = "pull:%s:%s:g%d" % (dev, tier_name, gen)
             offset = 0 if not advance else int(_sync_get(conn, ckey, key, 0) or 0)
             rows, new_offset, bad = wire.read_since(channel, dev, tier_name, offset)
+            if advance and int(ch.read_head(channel, dev, tier_name).get("gen") or 0) != gen:
+                gen = int(ch.read_head(channel, dev, tier_name).get("gen") or 0)
+                key = "pull:%s:%s:g%d" % (dev, tier_name, gen)
+                rows, new_offset, bad = wire.read_since(channel, dev, tier_name, 0)
+                stat["gen_changed"] = stat.get("gen_changed", 0) + 1
             stat["bad_lines"] += bad
             for o in rows:
                 sid = o.get("sid")

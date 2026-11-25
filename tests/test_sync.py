@@ -24,6 +24,7 @@ from batonpass.store.write import (
     now_iso,
 )
 from batonpass.sync import init_channel, pull, push, status
+from batonpass.sync import channel as ch
 
 TEXT = "把记忆中枢换成接力棒，先做 archive，再做 sync。"
 
@@ -130,3 +131,63 @@ class SyncBetweenTwoMachines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompactionNeverLosesAFact(unittest.TestCase):
+    """A stream may be re-sent forever; what it *means* must not grow with it.
+
+    The failure this guards against is not a wrong byte — it is a channel that
+    doubles in size every time you push, until syncing costs minutes.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="batonpass-compact-")
+        self.channel = os.path.join(self.tmp, "channel")
+        self.a, self.sid = make_library(os.path.join(self.tmp, "a.db"))
+        init_channel(self.channel, device="alpha")
+
+    def tearDown(self):
+        self.a.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        try:
+            os.environ.pop("BATONPASS_DEVICE", None)
+        except Exception:
+            pass
+
+    def _forget_watermarks(self):
+        self.a.execute("DELETE FROM sync_state")
+        self.a.commit()
+
+    def test_a_resend_collapses_instead_of_piling_up(self):
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        once = ch.wire.stream_bytes(self.channel, "alpha", "t0")
+        self._forget_watermarks()
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        twice = ch.wire.stream_bytes(self.channel, "alpha", "t0")
+        self.assertGreater(twice, once)          # it did append again
+        out = ch.compact(self.channel, "alpha", "t0", force=True)
+        self.assertTrue(out["compacted"])
+        self.assertEqual(out["lines_after"], 1)  # one session, one line
+        self.assertLess(out["after"], twice)
+
+    def test_a_new_generation_is_read_from_zero_and_adds_nothing(self):
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        b = connect(os.path.join(self.tmp, "b.db"))
+        first = pull(self.channel, tier=1, device="beta", conn=b)
+        self.assertEqual(first["sessions_new"], 1)
+        ch.compact(self.channel, "alpha", "t0", force=True)
+        again = pull(self.channel, tier=1, device="beta", conn=b)
+        # The whole file is re-read … and the library is exactly as it was.
+        self.assertEqual(again["sessions_seen"], 1)
+        self.assertEqual(again["sessions_new"], 0)
+        self.assertEqual(b.execute("SELECT COUNT(*) FROM session").fetchone()[0], 1)
+        b.close()
+
+    def test_nothing_is_compacted_below_the_threshold(self):
+        push(self.channel, tier=1, device="alpha", conn=self.a)
+        self.assertFalse(ch.compact(self.channel, "alpha", "t0")["compacted"])
+
+    def test_a_stream_that_does_not_exist_gets_no_generation(self):
+        out = ch.compact(self.channel, "alpha", "t2")
+        self.assertFalse(out["compacted"])
+        self.assertEqual(ch.read_head(self.channel, "alpha", "t2"), {})

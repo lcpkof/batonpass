@@ -176,9 +176,13 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
     for t, buf in ((0, t0_buf), (1, t1_buf), (2, t2_buf)):
         if not buf:
             continue
-        wrote = wire.append_lines(channel, device, "t%d" % t, buf)
+        name = "t%d" % t
+        wire.append_lines(channel, device, name, buf)
         stat["lines"][t] = len(buf)
-        ch.write_head(channel, device, "t%d" % t, {"lines": len(buf), "bytes": wrote})
+        ch.write_head(channel, device, name, {"lines": len(buf)})
+        comp = ch.compact(channel, device, name)
+        if comp.get("compacted"):
+            stat.setdefault("compacted", {})[name] = comp
 
     # Mark what we sent only after the bytes are on disk, and never a session
     # that raised — otherwise it would never be retried.

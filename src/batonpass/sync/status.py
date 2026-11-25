@@ -39,11 +39,15 @@ def status(channel: str, conn=None) -> dict:
                 if not name.endswith(".jsonl"):
                     continue
                 path = os.path.join(d, name)
-                key = "pull:%s:%s" % (dev, name[:-6])
+                tier = name[:-6]
+                gen = int(ch.read_head(channel, dev, tier).get("gen") or 0)
+                # A compacted stream is a new generation: what we read before
+                # the rewrite says nothing about what is in the file now.
+                key = "pull:%s:%s:g%d" % (dev, tier, gen)
                 size = os.path.getsize(path)
                 done = offsets.get(key)
                 streams.append({
-                    "device": dev, "tier": name[:-6], "bytes": size,
+                    "device": dev, "tier": tier, "bytes": size, "gen": gen,
                     "read": done, "pending": (size - done) if done is not None else size,
                 })
     return {"channel": channel, "channel_id": ckey if ch.is_channel(channel) else None,
