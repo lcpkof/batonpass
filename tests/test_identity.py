@@ -160,6 +160,36 @@ class LibraryTest(unittest.TestCase):
         self.conn.close()
         shutil.rmtree(self.tmp)
 
+    def test_a_pulled_project_key_survives_a_local_rebuild(self):
+        # The session came from another machine: no local cwd to derive from, but
+        # t0 brought the answer. Rebuilding here must not erase it.
+        sid = make_session(self.conn, self.codec, "win-1", None, "xueji 上继续",
+                           ["接着做资料箱"], device="windows-box")
+        self.conn.execute("UPDATE session SET project_key='~/xueji', project_key_tier=2 "
+                          "WHERE sid=?", (sid,))
+        self.conn.commit()
+        st = build(self.conn, extract_artifacts=False)
+        key = self.conn.execute(
+            "SELECT project_key FROM session WHERE sid=?", (sid,)).fetchone()[0]
+        self.assertEqual(key, "~/xueji")
+        self.assertEqual(st["kept_remote"], 1)
+        self.assertEqual(st["unknown"], 0)
+
+    def test_a_local_guess_is_still_allowed_to_be_wrong(self):
+        # Same shape, but the key was ours: an empty derivation means ungrouped,
+        # so the old key goes. Silence beats a confident mistake.
+        from batonpass.archive.runner import device_name
+        sid = make_session(self.conn, self.codec, "local-1", None, "随手一问",
+                           ["今天几号"], device=device_name())
+        self.conn.execute("UPDATE session SET project_key='~/ghost', project_key_tier=2 "
+                          "WHERE sid=?", (sid,))
+        self.conn.commit()
+        st = build(self.conn, extract_artifacts=False)
+        key = self.conn.execute(
+            "SELECT project_key FROM session WHERE sid=?", (sid,)).fetchone()[0]
+        self.assertIsNone(key)
+        self.assertEqual(st["kept_remote"], 0)
+
     def test_two_folders_two_projects(self):
         build(self.conn)
         keys = {p["project_key"] for p in projects(self.conn)}

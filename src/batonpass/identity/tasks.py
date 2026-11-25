@@ -71,7 +71,18 @@ def build(conn, extract_artifacts: bool = True, limit: int = None, home: str = N
     ).fetchall()
 
     stats = {"sessions": 0, "keys_changed": 0, "artifacts": 0, "with_artifacts": 0,
-             "tiers": {}, "unknown": 0, "forks": 0, "merged_subprojects": 0}
+             "tiers": {}, "unknown": 0, "forks": 0, "merged_subprojects": 0,
+             "kept_remote": 0}
+
+    # Our paths say nothing about another machine's disk. A session that arrived
+    # through a channel already carries the answer the machine that owned it gave
+    # (t0 `pk`), so an empty local derivation must not erase it — otherwise
+    # "switch machines" silently loses exactly the grouping it was for.
+    from ..archive.runner import device_name
+    try:
+        local_device = device_name()
+    except Exception:
+        local_device = ""
 
     derived = []
     for r in rows:
@@ -88,6 +99,9 @@ def build(conn, extract_artifacts: bool = True, limit: int = None, home: str = N
         stats["sessions"] += 1
         key = remap.get(key, key)
         stats["tiers"][tier] = stats["tiers"].get(tier, 0) + 1
+        if not key and (r["project_key"] or "") and (r["device"] or "") != local_device:
+            stats["kept_remote"] += 1
+            key = r["project_key"]
         if not key:
             stats["unknown"] += 1
         if key != (r["project_key"] or ""):

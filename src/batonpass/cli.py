@@ -323,6 +323,10 @@ def cmd_identity(args):
     tiers = st["tiers"]
     print("  confidence: high %d · medium %d · low %d" % (
         tiers.get(1, 0), tiers.get(2, 0), tiers.get(3, 0)))
+    if st.get("kept_remote"):
+        # Sessions that came from another machine: our disk cannot out-vote their
+        # answer, so their project key stands as it arrived.
+        print("  kept %d project key(s) that arrived from another machine" % st["kept_remote"])
     return 0
 
 
