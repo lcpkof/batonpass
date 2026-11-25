@@ -942,8 +942,12 @@ no telemetry exists.</p>
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="discover.py",
-        description="Read-only inventory of local AI history (batonpass v%s)" % VERSION)
+        prog="batonpass",
+        description="Read-only inventory of local AI history (batonpass v%s)" % VERSION,
+        epilog="archive / find / resume are designed but not shipped yet — "
+               "see docs/design-v1.md")
+    ap.add_argument("command", nargs="?", default="discover", choices=["discover"],
+                    help="what to do (default: discover)")
     ap.add_argument("--report", default="batonpass-report.html", help="HTML output path")
     ap.add_argument("--json", dest="json_path", help="also write machine-readable JSON here")
     ap.add_argument("--deep", action="store_true",
