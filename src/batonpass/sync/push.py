@@ -21,13 +21,14 @@ import json
 import os
 
 from .. import __version__
+from ..store import redact
 from ..store.content import Codec, get_content, get_dict
 from ..store.text import clean
 from ..store.write import message_key, part_key
 from . import channel as ch
 from . import wire
 
-SUMMARY_VER = 3
+SUMMARY_VER = 4          # 4 redacts credentials out of the prose
 MAX_T1_REFS = 12          # 24 is the cap the identity layer keeps; a card shows five
 HEAD_PER_ROLE = 3
 HEAD_CHARS = 600
@@ -106,11 +107,14 @@ def _t1_refs(row) -> list:
             for r in refs[:MAX_T1_REFS] if isinstance(r, dict) and r.get("name")]
 
 
-def _head_prose(conn, codecs, sid, source) -> tuple:
+def _head_prose(conn, codecs, sid, source, stat=None) -> tuple:
     """First ask + last few rounds. Cheap, local, no model involved.
 
     This is what turns "I think I was doing something like X" into "it was on
     the mini, in this session, and the last thing you asked was Y".
+
+    Credentials are replaced here, before the truncation, because a key cut in
+    half at the 600-char boundary would otherwise match nothing and ship anyway.
     """
     rows = conn.execute(
         "SELECT seq, role, text_sha FROM message WHERE sid=? ORDER BY seq", (sid,)
@@ -132,10 +136,16 @@ def _head_prose(conn, codecs, sid, source) -> tuple:
         ):
             shas.extend([a, b])
         text = "\n".join(t for t in (clean(codecs.text(source, s)) for s in shas if s) if t)
+        text, n = redact.scrub(text)
+        if stat is not None:
+            stat["redacted"] = stat.get("redacted", 0) + n
         if text.strip():
             out.append([r[0], r[1] or "", text[:HEAD_CHARS]])
     one_line = out[0][2].splitlines()[0][:ONE_LINE_CHARS] if out else ""
     return one_line, out
+
+
+
 
 
 def push(channel: str, tier: int = 1, device: str = None, conn=None,
@@ -148,6 +158,7 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
     stat = {"channel": channel, "channel_id": ckey, "device": device, "tier": tier,
             "sessions": 0, "sessions_sent": 0, "lines": {0: 0, 1: 0, 2: 0},
             "blobs_new": 0, "blob_bytes": 0, "messages": 0, "parts": 0,
+            "redacted": 0,
             "skipped": 0, "errors": []}
 
     q, args = "SELECT rowid,* FROM session", ()
@@ -185,10 +196,13 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
                 # The summary carries its text inline. Sending it as blobs too
                 # would mean thousands of 700-byte files, and a filesystem
                 # charges a 4 KB block for each of them.
-                one_line, head = _head_prose(conn, codecs, sid, source)
+                one_line, head = _head_prose(conn, codecs, sid, source, stat)
                 line = {"v": wire.WIRE_VERSION, "t": 1, "sid": sid, "one": one_line,
                         "head": head, "n": n_msg}
                 refs = _t1_refs(row)
+                for ref in refs:                     # a filename can be a secret too
+                    ref["name"], n = redact.scrub(ref["name"])
+                    stat["redacted"] += n
                 if refs:
                     line["refs"] = refs
                 t1_buf.append(wire.pack(line))

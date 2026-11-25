@@ -241,6 +241,9 @@ def cmd_sync(args):
         if st["tier"] >= 2:
             print("  %d messages, %d parts" % (st["messages"], st["parts"]))
         print("  blobs: %d new, %s" % (st["blobs_new"], _fmt_bytes(st["blob_bytes"])))
+        if st.get("redacted"):
+            print("  %d credential(s) replaced with <redacted> in the summaries"
+                  % st["redacted"])
         shown = st["errors"][:5]          # five of the same sentence is enough
         for e in shown:
             print("  ERROR %s" % e)
