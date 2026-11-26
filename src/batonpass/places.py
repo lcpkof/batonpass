@@ -52,8 +52,12 @@ def _alma(home: str) -> list:
             conn.close()
 
 
-def _dsh(home: str) -> list:
-    """dsh: one JSON file per instance (~/.dsh, ~/.dsh-alice, ~/.dsh-yannick)."""
+def _dsh_workspaces(home: str) -> list:
+    """dsh: one JSON file per instance (~/.dsh, ~/.dsh-alice, ~/.dsh-yannick).
+
+    This file is also the only place dsh says *which sessions* belong to a
+    workspace — its session table has no cwd column at all.
+    """
     out = []
     for f in sorted(Path(home).glob(".dsh*/storages/workspace.json")):
         instance = f.parent.parent.name.lstrip(".")
@@ -68,8 +72,19 @@ def _dsh(home: str) -> list:
             out.append(dict(tool="dsh", ref="%s/%s" % (instance, wid),
                             path=w.get("path"), label=w.get("title"),
                             sessions=len(w.get("sessionIds") or []),
+                            session_ids=w.get("sessionIds") or [],
                             last_at=w.get("updatedAt") or w.get("updated_at")))
     return out
+
+
+def _dsh(home: str) -> list:
+    return _dsh_workspaces(home)
+
+
+# Which tool a library source belongs to. `billion` is the store dsh writes
+# into (its rows carry `namespace: dsh`), so a directory attached to a billion
+# session is a dsh workspace — not a second tool claiming the same folder.
+_SOURCE_TOOL = {"billion": "dsh", "dsh-chat": "dsh"}
 
 
 def _sessions(conn) -> list:
@@ -78,8 +93,59 @@ def _sessions(conn) -> list:
         "SELECT source, cwd, COUNT(*) n, MAX(COALESCE(last_msg_at, updated_at, '')) last"
         "  FROM session WHERE cwd IS NOT NULL AND cwd <> '' GROUP BY source, cwd"
     ).fetchall()
-    return [dict(tool=r["source"], ref="", path=r["cwd"], label=None,
-                 sessions=r["n"], last_at=r["last"]) for r in rows]
+    return [dict(tool=_SOURCE_TOOL.get(r["source"], r["source"]), ref="",
+                 path=r["cwd"], label=None, sessions=r["n"], last_at=r["last"])
+            for r in rows]
+
+
+_SESSION_PREFIXES = ("session-", "worker-", "orchestrator-")
+
+
+def _bare_sid(sid: str) -> str:
+    """dsh names one conversation two ways: `session-<uuid>` in its workspace
+    file, `<uuid>` (and sometimes both) in its session table. Same session."""
+    sid = (sid or "").strip()
+    for p in _SESSION_PREFIXES:
+        if sid.startswith(p):
+            return sid[len(p):]
+    return sid
+
+
+def attach(conn, home: str = None) -> int:
+    """Put archived sessions in the workspace their own tool says they're in.
+
+    Without this the dsh history is archived but unplaceable: its database has
+    no cwd column, so `resume --cwd ~/luocp` answers "nothing recorded" about a
+    folder holding 93 conversations. Only sessions with no directory are
+    touched — a cwd a source stated itself is never replaced by a mapping.
+    """
+    home = home or os.path.expanduser("~")
+    claims = {}
+    for w in _dsh_workspaces(home):
+        path = norm_path(w.get("path"))
+        if not path or not os.path.isdir(path):
+            continue
+        key, tier, _ = pj.derive(path, "", home)
+        for sid in w["session_ids"]:
+            bare = _bare_sid(sid)
+            if bare:
+                claims.setdefault(bare, (path, key, tier))
+    if not claims:
+        return 0
+
+    moved = 0
+    for r in conn.execute("SELECT sid, source_sid FROM session"
+                          " WHERE cwd IS NULL OR cwd = ''").fetchall():
+        hit = claims.get(_bare_sid(r["source_sid"]))
+        if not hit:
+            continue
+        path, key, tier = hit
+        conn.execute("UPDATE session SET cwd=?, project_key=?, project_key_tier=?"
+                     " WHERE sid=?", (path, key, tier, r["sid"]))
+        moved += 1
+    if moved:
+        conn.commit()
+    return moved
 
 
 def collect(conn, home: str = None) -> list:
@@ -99,6 +165,8 @@ def refresh(conn, home: str = None) -> int:
     """Repopulate the registry. Idempotent; safe to run on every listing."""
     from .identity.tasks import _now_iso
 
+    attach(conn, home)                     # before collecting: a placed session
+                                           # is a place row with a real count
     now = _now_iso()
     seen = set()
     for r in collect(conn, home):

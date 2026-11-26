@@ -26,6 +26,7 @@ import unittest
 
 from batonpass import places
 from batonpass.identity import baton
+from batonpass.identity import project as pj
 from batonpass.identity.tasks import task_id
 from batonpass.store.content import sha256_text
 from batonpass.store.db import connect
@@ -228,6 +229,45 @@ class Relay(unittest.TestCase):
             fh.write('{"tables": {"workspaces": {"w1": {"path"')   # mid-write
         places.refresh(self.conn, self.home)                        # must not raise
         self.assertIsInstance(places.merged(self.conn, self.home), list)
+
+    def test_a_session_lands_where_its_tool_says_it_belongs(self):
+        # dsh's session table has no cwd column at all; the workspace file is the
+        # only place it says which conversations belong to which directory. Two
+        # spellings of the same id (`session-<uuid>` and `<uuid>`) must both land.
+        from batonpass.store.write import now_iso, session_key, upsert_session
+
+        work = os.path.join(self.home, "luocp")
+        os.makedirs(work)
+        storages = os.path.join(self.home, ".dsh", "storages")
+        os.makedirs(storages)
+        with open(os.path.join(storages, "workspace.json"), "w") as fh:
+            json.dump({"tables": {"workspaces": {"w1": {
+                "title": "luocp", "path": work,
+                "sessionIds": ["session-aaaa", "bbbb", "session-gone"]}}}}, fh)
+
+        for source_sid, cwd in (("session-aaaa", None), ("bbbb", None),
+                                ("cccc", "/elsewhere/already/known")):
+            upsert_session(self.conn, {
+                "sid": session_key("billion", source_sid, "dev"), "source": "billion",
+                "source_sid": source_sid, "device": "dev", "project_key": "dsh",
+                "project_key_tier": 3, "cwd": cwd, "title": source_sid,
+                "created_at": now_iso(), "updated_at": now_iso(), "msg_count": 1,
+                "first_msg_at": now_iso(), "last_msg_at": now_iso(),
+                "adapter_ver": "0.7.0", "content_hash": "c" + source_sid,
+            })
+        self.conn.commit()
+
+        self.assertEqual(places.attach(self.conn, self.home), 2)
+        rows = {r["source_sid"]: (r["cwd"], r["project_key"]) for r in self.conn.execute(
+            "SELECT source_sid, cwd, project_key FROM session")}
+        self.assertEqual(rows["session-aaaa"][0], work)
+        self.assertEqual(rows["bbbb"][0], work)
+        self.assertEqual(rows["session-aaaa"][1],
+                         pj.derive(work, "", self.home)[0],
+                         "the session lands under the same project key the "
+                         "folder itself derives, not under dsh's own namespace")
+        self.assertEqual(rows["cccc"][0], "/elsewhere/already/known",
+                         "a cwd a source stated itself is never replaced by a mapping")
 
     # ── upgrade ─────────────────────────────────────────────────
     def test_an_old_library_gains_the_tool_column(self):

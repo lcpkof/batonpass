@@ -381,9 +381,19 @@ def card(conn, project_key: str, sessions: int = 4) -> str:
     if ask:
         lines.append("原话  「%s」" % _clip(ask, 60))
 
-    tail = last_turns(conn, newest["sid"], newest["source"], ("assistant",), 1)
+    # The newest assistant turn is often a tool call with no prose of its own —
+    # dsh splits one turn into a row per kind — so walk back to the last one that
+    # actually said something instead of printing a timestamp and a blank.
+    tail = [t for t in last_turns(conn, newest["sid"], newest["source"],
+                                  ("assistant",), 40)
+            if (t.get("text") or "").strip()]
     if tail:
-        lines.append("最后  助手 %s: %s" % (_when(tail[0]["ts"]), _clip(tail[0]["text"], 90)))
+        # One line, not the whole answer: a reply that starts with a table turns
+        # into `| | 今日必装 | …` once the whitespace is collapsed.
+        said = next((ln.strip() for ln in (tail[0]["text"] or "").splitlines()
+                     if ln.strip()), "")
+        lines.append("最后  助手 %s: %s" % (_when(tail[0]["ts"]),
+                                           _clip(said, 90)))
 
     for r in rows[1:sessions]:
         fork = "  (fork of %s)" % (r["forked_from"] or "")[:8] if r.get("forked_from") else ""

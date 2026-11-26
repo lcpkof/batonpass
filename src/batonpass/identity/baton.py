@@ -171,8 +171,14 @@ def others(conn, project_key: str, me: str, limit: int = 3) -> list:
             continue
         line = ""
         try:
-            turns = last_turns(conn, s["sid"], s["source"])
-            line = (turns[0].get("text") or "") if turns else ""
+            # Not turns[0]: a turn that only called tools has no prose, and a
+            # card that quotes nothing is worse than one that quotes an older
+            # turn. Walk back until somebody actually said something.
+            turns = last_turns(conn, s["sid"], s["source"], ("assistant",), 40)
+            line = next((ln.strip()
+                         for t in turns
+                         for ln in (t.get("text") or "").splitlines()
+                         if ln.strip()), "")
         except Exception:
             line = ""                      # the timeline is incomplete; say less, not wrong
         out.append(dict(tool=s["source"], when=s.get("updated_at"),

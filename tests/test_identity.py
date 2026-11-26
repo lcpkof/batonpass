@@ -215,6 +215,18 @@ class LibraryTest(unittest.TestCase):
         self.assertIn("资料箱", text)
         self.assertIn("个会话", text)
 
+    def test_the_last_word_is_the_last_one_that_said_anything(self):
+        # A turn that only called tools has no prose of its own — dsh stores one
+        # row per kind — so the newest assistant row can be blank. A card that
+        # prints its timestamp and then nothing reads as truncated; walk back.
+        mid = message_key(self.sid_b, 90)
+        sha, _ = put_content(self.conn, "", self.codec)
+        put_message(self.conn, mid, self.sid_b, 90, "assistant", sha, ts=now_iso())
+        self.conn.commit()
+        build(self.conn)
+        text = card(self.conn, "~/gp", 2)
+        self.assertIn("复盘已写进 2026-11-18.md", text)
+
     def test_subproject_folds_into_parent(self):
         for i in range(6):
             make_session(self.conn, self.codec, "big-%d" % i, "/Users/a/Documents/big",
