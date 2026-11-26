@@ -384,16 +384,30 @@ def card(conn, project_key: str, sessions: int = 4) -> str:
     # The newest assistant turn is often a tool call with no prose of its own —
     # dsh splits one turn into a row per kind — so walk back to the last one that
     # actually said something instead of printing a timestamp and a blank.
+    # A watched session can run for days without a word of prose — a health check
+    # that only calls tools updates `updated_at` and nothing else, and the card
+    # then reads "last said 11-17" for a project touched this morning. So the
+    # tail is taken from every recent session and the newest one wins, with the
+    # session named whenever it is not the one the 原话 came from.
+    said_by = newest["sid"]
     tail = [t for t in last_turns(conn, newest["sid"], newest["source"],
                                   ("assistant",), 40)
             if (t.get("text") or "").strip()]
+    for other in rows[1:sessions]:
+        theirs = [t for t in last_turns(conn, other["sid"], other["source"],
+                                        ("assistant",), 40)
+                  if (t.get("text") or "").strip()]
+        if theirs and (not tail or (theirs[0].get("ts") or "") > (tail[0].get("ts") or "")):
+            tail, said_by = theirs, other["sid"]
     if tail:
         # One line, not the whole answer: a reply that starts with a table turns
         # into `| | 今日必装 | …` once the whitespace is collapsed.
         said = next((ln.strip() for ln in (tail[0]["text"] or "").splitlines()
                      if ln.strip()), "")
-        lines.append("最后  助手 %s: %s" % (_when(tail[0]["ts"]),
-                                           _clip(said, 90)))
+        lines.append("最后  助手 %s%s: %s" % (
+            _when(tail[0]["ts"]),
+            "" if said_by == newest["sid"] else "  (%s)" % said_by[:8],
+            _clip(said, 90)))
 
     for r in rows[1:sessions]:
         fork = "  (fork of %s)" % (r["forked_from"] or "")[:8] if r.get("forked_from") else ""
