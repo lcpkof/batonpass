@@ -18,6 +18,7 @@ join" — and you spend 20 minutes re-deriving what you already knew.
 last-week-you to today-you**, without the work touching the ground.
 
 ```
+batonpass setup                        # scan · remember · hand your agents the key  (one command)
 batonpass discover                     # what AI history is on this machine?  (read-only, 2 s)
 batonpass archive                      # pull it into a portable library  (~1 min per GB)
 batonpass export <session> --text      # read one conversation back out
@@ -27,6 +28,42 @@ batonpass index                        # local search index, ~17 s per 700 sessi
 batonpass find "岗位表" --at 7d           # search it, with time windows
 batonpass tasks                        # every project, one line each
 batonpass resume                       # handover card for the directory you are in
+```
+
+---
+
+## One command: `batonpass setup`
+
+```bash
+uvx --from batonpass-cli batonpass setup
+```
+
+Four lines come out, and then your agents can already answer for you:
+
+```
+found       5 source(s), 726 conversations, 268,272 messages
+archived    724 sessions, 267,973 messages, 7,596 new rows
+indexed     60,190 documents, 724/724 sessions searchable
+agents      Alma connected, Claude Code connected
+```
+
+What it does, in order — and every step is also its own verb if you want to run it alone:
+
+1. **scan** — `discover`, read-only, tells you what is actually on the disk
+2. **remember** — `archive`, into `~/.batonpass/library.db`, nothing touched in place
+3. **index** — `find` and the MCP tools need this to be fast
+4. **connect** — adds an `mcpServers.batonpass` entry to the agent configs it finds
+   (Alma, Claude Code, Claude Desktop, Cursor), each one copied to `.bak-batonpass` first.
+   **It asks first.** No terminal to ask, no edit — `--yes` if you mean it.
+
+Then, in any agent that speaks MCP:
+
+> *"search my history for the thing I fixed last Tuesday"*
+
+The third and fourth machine are the same sentence:
+
+```bash
+batonpass setup --join ~/Dropbox/baton    # pull summaries, index them, connect the agents
 ```
 
 ---

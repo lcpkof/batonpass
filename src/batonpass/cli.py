@@ -120,6 +120,14 @@ def cmd_mcp(args):
     return mcp.serve(db_path=args.db)
 
 
+def cmd_setup(args):
+    from . import setup
+
+    return setup.run(db=args.db, channel=args.channel, join=args.join,
+                     archive=not args.no_archive, index=not args.no_index,
+                     agents=not args.no_agents, yes=args.yes)
+
+
 def cmd_doctor(args):
     from . import doctor
 
@@ -435,6 +443,19 @@ def build_parser():
         description="Never drop the baton. Read-only archive of the AI history on this machine.")
     p.add_argument("--version", action="version", version="batonpass " + __version__)
     sub = p.add_subparsers(dest="cmd")
+
+    u = sub.add_parser("setup", help="one command: scan, archive, index, connect your agents")
+    u.add_argument("--join", default=None, metavar="CHANNEL",
+                   help="a second machine: start from the channel someone else pushed")
+    u.add_argument("--channel", default=None,
+                   help="your channel path, so the closing hint can name it")
+    u.add_argument("--yes", action="store_true",
+                   help="do not ask before adding the MCP server to agent configs")
+    u.add_argument("--no-archive", action="store_true", help="skip copying history")
+    u.add_argument("--no-index", action="store_true", help="skip building the search index")
+    u.add_argument("--no-agents", action="store_true", help="do not touch agent configs")
+    u.add_argument("--db", default=None)
+    u.set_defaults(func=cmd_setup)
 
     d = sub.add_parser("discover", help="inventory local AI history (read-only, writes nothing)")
     d.add_argument("--only", default=None)
