@@ -102,27 +102,30 @@ def _train_from_source(adapter, conn_src):
 def run_archive(only=None, level=1, limit=None, db=None, dry_run=False,
                with_identity=True):
     conn = connect(db)
-    device = device_name()
-    from ..discover import sources as discover_sources
-    from .adapters import ADAPTERS as KNOWN
-    found = discover_sources()
-    wanted = [f for f in found if f.get("adapter") in KNOWN]
-    unsupported = sorted({f.get("adapter") for f in found
-                          if f.get("adapter") and f.get("adapter") not in KNOWN})
-    if only:
-        names = set(only)
-        wanted = [f for f in wanted if f.get("adapter") in names]
-    out = {"device": device, "when": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-           "sources": [], "totals": {}, "unsupported": unsupported}
-    for f in wanted:
-        r = archive_one(conn, f["adapter"], f["path"], device, level=level,
-                        dry_run=dry_run, limit=limit)
-        out["sources"].append(r.as_dict())
-    for key in ("sessions", "messages", "parts", "raw_records", "new_rows", "skipped"):
-        out["totals"][key] = sum(s[key] for s in out["sources"])
-    # Identity is derived, so it runs after the append, not inside it: a source
-    # that failed to archive must not leave a half-labelled project behind.
-    if with_identity and not dry_run:
-        from ..identity import build
-        out["identity"] = build(conn)
-    return out
+    try:
+        device = device_name()
+        from ..discover import sources as discover_sources
+        from .adapters import ADAPTERS as KNOWN
+        found = discover_sources()
+        wanted = [f for f in found if f.get("adapter") in KNOWN]
+        unsupported = sorted({f.get("adapter") for f in found
+                              if f.get("adapter") and f.get("adapter") not in KNOWN})
+        if only:
+            names = set(only)
+            wanted = [f for f in wanted if f.get("adapter") in names]
+        out = {"device": device, "when": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "sources": [], "totals": {}, "unsupported": unsupported}
+        for f in wanted:
+            r = archive_one(conn, f["adapter"], f["path"], device, level=level,
+                            dry_run=dry_run, limit=limit)
+            out["sources"].append(r.as_dict())
+        for key in ("sessions", "messages", "parts", "raw_records", "new_rows", "skipped"):
+            out["totals"][key] = sum(s[key] for s in out["sources"])
+        # Identity is derived, so it runs after the append, not inside it: a source
+        # that failed to archive must not leave a half-labelled project behind.
+        if with_identity and not dry_run:
+            from ..identity import build
+            out["identity"] = build(conn)
+        return out
+    finally:
+        conn.close()

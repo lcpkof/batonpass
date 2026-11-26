@@ -14,6 +14,15 @@ import unittest
 from batonpass import setup
 
 
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _json(path):
+    return json.loads(_read(path))
+
+
 class FakeHome(unittest.TestCase):
     """A throwaway $HOME, so no real agent config is ever in reach."""
 
@@ -42,7 +51,7 @@ class RegisterTests(FakeHome):
         cfg = self.path(".cursor", "mcp.json")
         os.makedirs(os.path.dirname(cfg))
         self.assertEqual(setup.register(cfg), "connected")
-        data = json.load(open(cfg, encoding="utf-8"))
+        data = _json(cfg)
         entry = data["mcpServers"]["batonpass"]
         self.assertEqual(entry["args"][-1], "mcp")
 
@@ -52,7 +61,7 @@ class RegisterTests(FakeHome):
         with open(cfg, "w", encoding="utf-8") as fh:
             json.dump({"mcpServers": {"other": {"command": "x"}}, "zeta": 1}, fh)
         setup.register(cfg)
-        data = json.load(open(cfg, encoding="utf-8"))
+        data = _json(cfg)
         self.assertIn("other", data["mcpServers"])
         self.assertIn("batonpass", data["mcpServers"])
         self.assertEqual(data["zeta"], 1, "unknown keys survive the rewrite")
@@ -69,9 +78,9 @@ class RegisterTests(FakeHome):
         cfg = self.path(".cursor", "mcp.json")
         os.makedirs(os.path.dirname(cfg))
         setup.register(cfg)
-        first = open(cfg, encoding="utf-8").read()
+        first = _read(cfg)
         self.assertEqual(setup.register(cfg), "already connected")
-        self.assertEqual(open(cfg, encoding="utf-8").read(), first)
+        self.assertEqual(_read(cfg), first)
 
     def test_a_broken_config_is_left_exactly_as_it_was(self):
         cfg = self.path(".cursor", "mcp.json")
@@ -80,7 +89,7 @@ class RegisterTests(FakeHome):
             fh.write("{ this is not json")
         out = setup.register(cfg)
         self.assertIn("not valid JSON", out)
-        self.assertEqual(open(cfg, encoding="utf-8").read(), "{ this is not json")
+        self.assertEqual(_read(cfg), "{ this is not json")
 
 
 class FindTests(FakeHome):
@@ -112,7 +121,7 @@ class RunTests(FakeHome):
             json.dump({"mcpServers": {}}, fh)
         rc = setup.run(archive=False, index=False, yes=False, ask=lambda q: False)
         self.assertEqual(rc, 0)
-        self.assertEqual(json.load(open(cfg, encoding="utf-8")), {"mcpServers": {}})
+        self.assertEqual(_json(cfg), {"mcpServers": {}})
 
     def test_yes_connects_them(self):
         os.makedirs(self.path(".config", "alma"))
@@ -120,7 +129,7 @@ class RunTests(FakeHome):
             json.dump({"mcpServers": {}}, fh)
         rc = setup.run(archive=False, index=False, yes=True)
         self.assertEqual(rc, 0)
-        data = json.load(open(self.path(".config", "alma", "mcp.json"), encoding="utf-8"))
+        data = _json(self.path(".config", "alma", "mcp.json"))
         self.assertIn("batonpass", data["mcpServers"])
 
     def test_join_refuses_a_folder_that_is_not_a_channel(self):
