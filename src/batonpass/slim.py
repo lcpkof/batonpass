@@ -301,10 +301,14 @@ def report(conn, p: dict, save: dict, stats: dict = None, dry: bool = True) -> s
         lines.append("  正文改明文 %s 条，多占 %s —— 换来搜全文 0.2 秒，压着存要解码 1.7 秒"
                      % (f"{p['plain']['rows']:,}", _fmt(save["plain"])))
     if save["plain"]:
-        sign = "净省" if save["net"] >= 0 else "净多占"
-        lines.append("  合计       省 %s，减去上面这笔多占，%s %s；"
-                     "外层还有一段碎片，VACUUM 之后才是文件真正变小"
-                     % (_fmt(save["gross"]), sign, _fmt(abs(save["net"]))))
+        if save["net"] >= 0:
+            tail = "省 %s，扣掉明文这笔，净省 %s" % (_fmt(save["gross"]),
+                                                     _fmt(save["net"]))
+        else:
+            tail = ("移出 %s，还不够明文这一笔，净多占 %s"
+                    % (_fmt(save["gross"]), _fmt(-save["net"])))
+        lines.append("  合计       %s；外层还有一段碎片，VACUUM 之后才是文件真正变小"
+                     % tail)
     else:
         lines.append("  合计       %s；外层还有一段碎片，VACUUM 之后才是文件真正变小"
                      % _fmt(save["gross"]))

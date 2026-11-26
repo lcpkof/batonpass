@@ -18,6 +18,7 @@ event. Neither rewrites history, and neither touches anyone else's data.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 
 from . import __version__
@@ -189,7 +190,13 @@ def tool_search(conn, args) -> str:
 
         hint = undecodable_hint(conn)
         return msg + ("\n" + hint if hint else "")
-    out = ["%d session(s) match %r" % (len(hits), q)]
+    words = sorted({h["matched"] for h in hits if h.get("matched")})
+    head = "%d session(s) match %r" % (len(hits), q)
+    if words:
+        # the phrase itself hit nothing; say which words did, so nobody thinks
+        # the whole sentence was found
+        head += " (no exact phrase — matched %s)" % " / ".join(words)
+    out = [head]
     for h in hits:
         out.append("")
         out.append("%s  %s  %s  %s" % (
@@ -381,6 +388,17 @@ def serve(db_path=None, instream=None, outstream=None) -> int:
         except Exception as e:
             reply = {"jsonrpc": "2.0", "id": rid,
                      "error": {"code": -32603, "message": "%s: %s" % (type(e).__name__, e)}}
+        finally:
+            # A Python sqlite3 SELECT leaves a read transaction open, and this
+            # process lives for the whole app session. One open reader is enough
+            # to block every WAL checkpoint: the -wal file grew to 600 MB and
+            # `archive` started answering "database is locked". Close the snapshot
+            # after each request so writes elsewhere stay possible.
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
         if reply is None:
             continue
         out.write(json.dumps(reply, ensure_ascii=False) + "\n")

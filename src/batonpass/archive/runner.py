@@ -24,26 +24,28 @@ def device_name() -> str:
 
 def archive_one(conn_lib, adapter_name, path, device, level=1, dry_run=False, limit=None):
     adapter = get(adapter_name)
+    dir_source = getattr(adapter, "kind", "sqlite") == "dir"
     result = ArchiveResult(adapter_name, os.path.abspath(path))
-    before = file_signature(path)
-    result.bytes_in = os.path.getsize(path)
+    before = _dir_signature(path) if dir_source else file_signature(path)
+    result.bytes_in = _tree_size(path) if dir_source else os.path.getsize(path)
     result.source_sha = sha256_bytes(("%s|%s|%s" % (adapter_name, result.path,
                                                    before["main"])).encode())
 
     if dry_run:
-        conn_src, mode = source_ro(path)
+        conn_src, mode = (path, "read-only") if dir_source else source_ro(path)
         result.readonly_mode = mode
         try:
             ses = list(adapter.sessions(conn_src))
             result.sessions = len(ses)
             result.messages = sum(1 for s in ses for _ in adapter.messages(conn_src, s["source_sid"]))
         finally:
-            conn_src.close()
+            if hasattr(conn_src, "close"):
+                conn_src.close()
         result.note("dry-run: nothing written")
         return result
 
     codec = Codec(get_dict(conn_lib, adapter_name))
-    conn_src, mode = source_ro(path)
+    conn_src, mode = (path, "read-only") if dir_source else source_ro(path)
     result.readonly_mode = mode
     try:
         upsert_raw_source(conn_lib, result.source_sha, device, adapter_name, ADAPTER_VER,
@@ -62,11 +64,16 @@ def archive_one(conn_lib, adapter_name, path, device, level=1, dry_run=False, li
         conn_lib.rollback()
         result.errors.append("%s: %s" % (type(exc).__name__, exc))
     finally:
-        conn_src.close()
+        if hasattr(conn_src, "close"):
+            conn_src.close()
 
-    after = file_signature(path)
-    grew = _size(before["main"]) != _size(after["main"])
-    touched = before["main"] != after["main"] or before["wal"] != after["wal"]
+    after = _dir_signature(path) if dir_source else file_signature(path)
+    if dir_source:
+        grew = before["main"] != after["main"]
+        touched = grew
+    else:
+        grew = _size(before["main"]) != _size(after["main"])
+        touched = before["main"] != after["main"] or before["wal"] != after["wal"]
     if grew:
         result.errors.append("SOURCE SIZE CHANGED DURING READ (%s -> %s bytes); "
                              "re-run to pick up the new rows"
@@ -76,6 +83,40 @@ def archive_one(conn_lib, adapter_name, path, device, level=1, dry_run=False, li
     else:
         result.note("source untouched (%s)" % mode)
     return result
+
+
+def _tree_size(path):
+    total = 0
+    for root, dirs, names in os.walk(path):
+        for n in names:
+            try:
+                total += os.path.getsize(os.path.join(root, n))
+            except OSError:
+                pass
+    return total
+
+
+def _dir_signature(path):
+    """A directory is `unchanged` when its file list, sizes and mtimes are.
+
+    Same contract as file_signature(): the archive records what it read, and a
+    source that moved underneath the read is said out loud, not swallowed.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    total = 0
+    for root, dirs, names in os.walk(path):
+        dirs.sort()
+        for n in sorted(names):
+            f = os.path.join(root, n)
+            try:
+                st = os.stat(f)
+            except OSError:
+                continue
+            total += st.st_size
+            h.update(("%s|%d|%d\n" % (os.path.relpath(f, path), st.st_size,
+                                      int(st.st_mtime))).encode())
+    return {"main": "%d:%s" % (total, h.hexdigest()[:16]), "wal": ""}
 
 
 def _size(sig):

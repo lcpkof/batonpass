@@ -18,9 +18,16 @@ falls back one level and records the fallback in `result.notes`:
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import pathlib
 import sqlite3
+
+try:
+    import zstandard
+except ImportError:  # the [zstd] extra; discover still works without it
+    zstandard = None
 
 from ..store.content import put_content, sha256_bytes, sha256_text, short, sniff_and_decode
 from ..store.write import message_key, part_key, put_message, put_part, session_key, upsert_session
@@ -626,7 +633,231 @@ class Pinky:
                        meta={"state": d.get("state"), "device": d.get("device_name")})
 
 
-ADAPTERS = {a.name: a for a in (ZCode, Billion, Dsh, Alma, Pinky)}
+# ── dsh session files ───────────────────────────────────────────
+
+class DshSessions:
+    """dsh's real transcripts: one zstd-compressed JSONL event log per session.
+
+    `~/.dsh/sessions/<project-slug>/session-<uuid>/session.v4.jsonl.zstd`
+
+    The sqlite file next to it (`bot/chat-index.sqlite`) only indexes the bot's
+    mobile chats — nine conversations out of eight hundred. This is the other 99%.
+
+    Events are a stream, so messages are assembled as they arrive: a `tool/call`
+    and the `tool/result` that answers it belong to the assistant message that
+    was open when they happened. Nothing larger than one message is held.
+    """
+
+    name = "dsh-sessions"
+    kind = "dir"
+    file_glob = "session.v*.jsonl.zstd"
+
+    @staticmethod
+    def detect_dir(path):
+        root = pathlib.Path(path)
+        try:
+            hits = sum(1 for _ in root.glob("*/*/%s" % DshSessions.file_glob))
+        except OSError:
+            return 0.0, []
+        if hits:
+            return 0.97, ["%d %s under %s" % (hits, DshSessions.file_glob, root)]
+        return 0.0, []
+
+    @staticmethod
+    def _files(root):
+        return sorted(pathlib.Path(root).glob("*/*/%s" % DshSessions.file_glob))
+
+    @staticmethod
+    def _meta(root, uuid):
+        """Title and cwd from the session cache — 50 KB instead of 50 MB."""
+        cache = pathlib.Path(root).parent / "storages" / "session_projcache" / "sessions"
+        f = cache / ("%s.json" % uuid)
+        if not f.exists():
+            return {}
+        try:
+            rec = json.loads(f.read_text()).get("record") or {}
+        except (ValueError, OSError):
+            return {}
+        rows = rec.get("rows") or {}
+        title = ((rows.get("title") or {}).get("val") or "").strip() or None
+        ident = rec.get("identity") or {}
+        return {"title": title, "cwd": ident.get("cwd"),
+                "created_at": ident.get("createdAt"),
+                "first_q": (((rows.get("titleInput") or {}).get("val") or {}).get("first") or {}).get("text")}
+
+    @staticmethod
+    def sessions(root):
+        for f in DshSessions._files(root):
+            sid_rel = str(f.parent.relative_to(root))
+            uuid = f.parent.name[len("session-"):] if f.parent.name.startswith("session-") else f.parent.name
+            meta = DshSessions._meta(root, uuid)
+            if not meta.get("cwd"):
+                # no session cache beside this home (a copied or pruned one):
+                # the first event still knows where the session lived.
+                head = _dsh_first_event(f)
+                meta["cwd"] = head.get("cwd") or meta.get("cwd")
+                meta["created_at"] = head.get("createdAt") or meta.get("created_at")
+            title = meta.get("title") or (meta.get("first_q") or "").strip()[:60]
+            if not title:
+                # no session cache (another home, or pruned): the first thing the
+                # person actually typed is still in the file, near the top.
+                title = _dsh_title(f)
+            yield dict(source_sid=sid_rel,
+                       title=title or None,
+                       cwd=meta.get("cwd"),
+                       created_at=_ts(meta.get("created_at")),
+                       updated_at=_ts(int(f.stat().st_mtime * 1000)),
+                       project_key=None, project_key_tier=3,
+                       forked_from=None, artifact_refs=None,
+                       meta={"dsh_session": uuid})
+
+    @staticmethod
+    def messages(root, sid):
+        d = pathlib.Path(root) / sid
+        files = sorted(d.glob(DshSessions.file_glob))
+        if not files:
+            return
+        cur, pend, n = None, {}, 0
+        for ev in _dsh_events(files[-1]):
+            t = ev.get("type")
+            data = ev.get("data") or {}
+            if t == "user/message":
+                if cur:
+                    yield cur
+                    cur = None
+                n += 1
+                text, parts = _dsh_content(data.get("content"))
+                kind = (data.get("source") or {}).get("kind") or "user"
+                # dsh hides instructions, runtime context, the skill catalogue and
+                # a clock reading inside user messages. They are real events, but
+                # a person did not type them — say so, or search will think a
+                # skills manual is something you once asked for.
+                yield dict(seq=n, role="user" if kind == "user" else "system",
+                           text=text, parts=parts,
+                           ts=_ts(ev.get("time")), model=None, meta={"from": kind})
+                continue
+            if t == "assistant/message":
+                if cur:
+                    yield cur
+                n += 1
+                msg = data.get("message") or {}
+                text, parts = _dsh_content(msg.get("content"))
+                cur = dict(seq=n, role="assistant", text=text, parts=parts,
+                           ts=_ts(ev.get("time")), model=data.get("model"),
+                           meta={"turn": data.get("turn"), "step": data.get("step")})
+                continue
+            if t == "tool/call":
+                if cur and cur["role"] != "assistant":
+                    yield cur
+                    cur = None
+                if cur is None:
+                    n += 1
+                    cur = dict(seq=n, role="assistant", text="", parts=[],
+                               ts=_ts(ev.get("time")), model=None, meta={"tool_only": True})
+                cid = data.get("callId")
+                if cid:
+                    pend[cid] = data.get("name")
+                cur["parts"].append(dict(kind="tool_call", name=data.get("name"),
+                                         args=data.get("arguments"), text=None, is_error=None))
+                continue
+            if t == "tool/result":
+                msg = data.get("message") or {}
+                cid = msg.get("toolCallId") or (msg.get("source") or {}).get("callId")
+                text, _ = _dsh_content(msg.get("content"))
+                meta = data.get("meta") or {}
+                is_err = bool(meta.get("isError") or meta.get("error") or msg.get("isError"))
+                if cur is None:
+                    n += 1
+                    cur = dict(seq=n, role="tool", text="", parts=[],
+                               ts=_ts(ev.get("time")), model=None, meta={})
+                cur["parts"].append(dict(kind="tool_result", name=pend.get(cid),
+                                         args=None, text=text, is_error=is_err))
+        if cur:
+            yield cur
+
+
+def _dsh_title(path, max_events: int = 600, chars: int = 60):
+    """The first user message, from the head of the file only.
+
+    A title is how the session gets found later, and a session with no title is
+    a session nobody searches for. Reading 80 events costs a few KB.
+    """
+    for i, ev in enumerate(_dsh_events(path)):
+        if i > max_events:
+            break
+        if ev.get("type") != "user/message":
+            continue
+        data = ev.get("data") or {}
+        if (data.get("source") or {}).get("kind") not in (None, "user"):
+            continue
+        text, _ = _dsh_content(data.get("content"))
+        text = " ".join((text or "").split())
+        if text:
+            return text[:chars]
+    return None
+
+
+def _dsh_first_event(path):
+    for ev in _dsh_events(path):
+        return ev
+    return {}
+
+
+def _dsh_events(path):
+    """One zstd file, streamed line by line, never loaded whole.
+
+    dsh appends: a long session is a dozen zstd frames in one file. Read across
+    them, and treat a half-written last frame as the end of the file rather than
+    as a reason to lose the other 5,000 events.
+    """
+    d = zstandard.ZstdDecompressor()
+    with open(path, "rb") as fh:
+        try:
+            rd = d.stream_reader(fh, read_across_frames=True)
+        except TypeError:  # older python-zstandard
+            rd = d.stream_reader(fh)
+        with rd:
+            try:
+                for raw in io.BufferedReader(rd):
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except ValueError:
+                        continue
+            except zstandard.ZstdError:
+                return
+
+
+def _dsh_content(content):
+    """dsh content items -> (text, parts). Prose stays prose; reasoning and
+    calls become parts so the slim pass can tell them apart later."""
+    texts, parts = [], []
+    if isinstance(content, str):
+        return content, parts
+    for c in content or []:
+        if not isinstance(c, dict):
+            continue
+        kind = c.get("type")
+        if kind == "text":
+            t = c.get("text") or ""
+            if t:
+                texts.append(t)
+        elif kind == "reasoning" and c.get("text"):
+            parts.append(dict(kind="reasoning", name=None, args=None, text=c["text"]))
+        elif kind in ("tool_use", "tool_call"):
+            parts.append(dict(kind="tool_call", name=c.get("name"),
+                              args=json.dumps(c.get("input") or c.get("arguments"),
+                                              ensure_ascii=False, default=str)
+                              if (c.get("input") or c.get("arguments")) else None,
+                              text=None, is_error=None))
+        elif kind == "image":
+            texts.append("[image]")
+    return "\n".join(texts), parts
+
+
+ADAPTERS = {a.name: a for a in (ZCode, Billion, Dsh, DshSessions, Alma, Pinky)}
 # the scanner's names are the ones that matter; these are the obvious aliases
 ADAPTERS["dsh"] = Dsh
 

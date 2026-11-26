@@ -204,6 +204,14 @@ CANDIDATES = [
     "~/.config/**/chat*.db",
 ]
 
+# Directory-shaped sources: not a database, a folder of transcript files.
+# (pattern, adapter, file glob, label) — the adapter reads it, the scanner only
+# says where it is and how much sits there.
+DIR_CANDIDATES = [
+    ("~/.dsh*/sessions", "dsh-sessions", "session.v*.jsonl.zstd",
+     "dsh session files (zstd JSONL, one per session)"),
+]
+
 # Directories that look like AI tooling but may hold history we do not parse yet.
 PROBE_ROOTS = [
     "~/.claude", "~/.codex", "~/.cursor", "~/.gemini", "~/.continue",
@@ -655,6 +663,9 @@ _NOT_HISTORY = (
     ("ContextStoreAgent", "an Apple system directory"),
     ("/dsh-usage", "a token-usage ledger, not a transcript"),
     ("/dsh-session-archive", "an empty archive — only a state marker inside"),
+    (".dsh-upgrade-backup", "a copy of another home taken before an upgrade"),
+    ("/.workbuddy/traces", "OpenTelemetry spans with truncated payloads — the "
+                           "conversation itself never lands on disk"),
 )
 _TRANSCRIPT_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".jsonl", ".json")
 
@@ -680,6 +691,68 @@ def not_history_reason(path) -> str:
     except OSError:
         return ""
     return ""
+
+
+def probe_dir_sources(keep=None, explain: bool = False):
+    """Find directory-shaped transcript stores and describe them honestly.
+
+    Message counts stay None on purpose: counting them means decompressing every
+    file, which is a job for `archive`, not for a read-only scan.
+    """
+    import glob as _glob
+    out = []
+    for pattern, adapter, glob, label in DIR_CANDIDATES:
+        for hit in sorted(_glob.glob(os.path.expanduser(pattern))):
+            base = Path(hit)
+            if not base.is_dir():
+                continue
+            named = not_history_reason(base) if (
+                "backup" in base.name or ".bak-" in str(base)) else ""
+            if named:
+                if explain:
+                    print(f"    not history: {base}  ({named})")
+                continue
+            try:
+                files = sorted(base.glob("*/*/%s" % glob))
+            except OSError:
+                continue
+            if not files:
+                continue
+            size = 0
+            for f in files:
+                try:
+                    size += f.stat().st_size
+                except OSError:
+                    pass
+            stamps = []
+            for f in files[:2000]:
+                try:
+                    stamps.append(f.stat().st_mtime)
+                except OSError:
+                    pass
+            if keep is not None and adapter not in keep:
+                continue
+            out.append({
+                "kind": "dir", "path": str(base), "size": size, "adapter": adapter,
+                "label": label, "confidence": "high", "detected_by": [label],
+                "tables": 0, "counters": {}, "sessions": len(files), "messages": None,
+                "parts": None,
+                "first": human_ts(min(stamps)) if stamps else None,
+                "last": human_ts(max(stamps)) if stamps else None,
+                "payload_bytes": None, "notes": "counted, not decompressed",
+                "degradations": [], "role": "transcripts",
+            })
+            if explain:
+                print(f"  probe {base}  ({adapter}, {len(files)} files, {human(size)})")
+    return out
+
+
+def human_ts(v):
+    """A datetime, not a string: the report formats these itself."""
+    try:
+        return dt.datetime.fromtimestamp(float(v)).astimezone()
+    except Exception:
+        return None
 
 
 def probe_roots(claimed: set, explain: bool):
@@ -755,6 +828,10 @@ def run(args):
                             "sessions": None, "messages": None, "parts": None,
                             "first": None, "last": None, "payload_bytes": None,
                             "notes": "", "degradations": [("permission-denied", str(e)[:200])]})
+
+    for src in probe_dir_sources(keep=keep, explain=args.explain):
+        claimed.add(str(Path(src["path"]).resolve()))
+        sources.append(src)
 
     if keep:
         unclaimed, ignored = [], []

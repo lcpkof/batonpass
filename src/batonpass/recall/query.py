@@ -171,12 +171,47 @@ def _session_filters(at, project, device):
     return (" AND " + " AND ".join(where)) if where else "", args
 
 
+_SPLIT = re.compile(r"[\s,，、;；:：/|()（）\[\]【】\"“”'<>《》!！?？.。]+")
+
+
+def terms(q: str, limit: int = 6) -> list:
+    """A sentence is not a key. "岗位表 join 修复" is three keys."""
+    out, seen = [], set()
+    for t in _SPLIT.split(q or ""):
+        t = t.strip()
+        if len(t) < 2 or t.lower() in seen:
+            continue
+        seen.add(t.lower())
+        out.append(t)
+    out.sort(key=len, reverse=True)
+    return out[:limit]
+
+
 def search(conn, q: str, at: str = None, project: str = None, device: str = None,
            limit: int = 5, explain: bool = False) -> list:
     """Return ranked sessions. Empty list is a valid, honest answer."""
     q = (q or "").strip()
     if len(q) < 2:
         return []
+    hits = _search_once(conn, q, at, project, device, limit, explain)
+    if hits:
+        return hits
+    words = terms(q)
+    if len(words) < 2:
+        return []
+    merged = {}
+    for tried, term in enumerate(words, 1):
+        for it in _search_once(conn, term, at, project, device, limit, explain):
+            prev = merged.get(it["sid"])
+            if prev is None or it["score"] > prev["score"]:
+                it = dict(it, matched=term)
+                merged[it["sid"]] = it
+        if tried >= 2 and len(merged) >= max(limit, 1):
+            break          # two words already answered; stop scanning
+    return sorted(merged.values(), key=lambda x: -x["score"])[:max(limit, 1)]
+
+
+def _search_once(conn, q, at, project, device, limit, explain) -> list:
     from .index import ensure
     ensure(conn)          # the title list is the one part that needs the table
     clauses, cargs = _session_filters(at, project, device)

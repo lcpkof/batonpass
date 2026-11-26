@@ -88,6 +88,12 @@ This is not a preference, it's the first law, and `discover` is built to prove i
 refuses to import a networking module, and it records any source it had to open
 immutably instead of silently proceeding.
 
+A database is not the only place a transcript lives. dsh keeps its real conversations as
+append-only **zstd JSONL files** — one file per session, one frame per flush — so those
+are read as files: streamed frame by frame, nothing written back, no unpacked copy left
+on disk. 956 such sessions (501 MB of `.zstd`) go in as 148k messages, and `fetch`
+re-reads the original file when a purged body comes back.
+
 **Read-only in · you own the copy out.**
 
 ---

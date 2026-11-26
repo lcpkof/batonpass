@@ -317,8 +317,7 @@ def cmd_index(args):
     if args.json:
         print(json.dumps({"built": st, "index": after}, ensure_ascii=False, indent=2))
         return 0
-    print("indexed %d messages across %d sessions (%d empty)" % (
-        st["docs"], st["sessions"], st["skipped"]))
+    print("indexed %d titles across %d sessions" % (st["docs"], st["sessions"]))
     print("index %s · %d docs · %d/%d sessions searchable" % (
         _fmt_bytes(after["bytes"]), after["docs"], after["sessions_indexed"],
         after["sessions_total"]))
@@ -344,8 +343,11 @@ def cmd_find(args):
         hint = undecodable_hint(conn)
         print(hint or "try: a shorter word · batonpass tasks · drop --at")
         return 1
-    print("%d hit%s%s" % (len(hits), "" if len(hits) == 1 else "s",
-                          "  (window %s)" % args.at if args.at else ""))
+    words = sorted({h["matched"] for h in hits if h.get("matched")})
+    print("%d hit%s%s%s" % (len(hits), "" if len(hits) == 1 else "s",
+                            "  (window %s)" % args.at if args.at else "",
+                            "  (no exact phrase — matched %s)" % " / ".join(words)
+                            if words else ""))
     for i, h in enumerate(hits, 1):
         print("\n%d) %s" % (i, h["project"] or "(no project)"))
         print("   %s" % (h["title"] or "(untitled)")[:100])
