@@ -114,11 +114,14 @@ def check_library(db_path):
     if not os.path.exists(db_path):
         return [_check(INFO, "library", "no library yet at %s" % db_path,
                        "batonpass archive   # or point --db somewhere else")]
+    conn = None
     try:
         conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
         conn.row_factory = sqlite3.Row
         conn.execute("SELECT COUNT(*) FROM session").fetchone()
     except sqlite3.Error as e:
+        if conn is not None:
+            conn.close()
         return [_check(FAIL, "library", "%s: %s" % (db_path, e),
                        "if it was written by an older batonpass, run "
                        "`batonpass archive` again into a new --db")]

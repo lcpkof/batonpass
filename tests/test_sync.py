@@ -157,10 +157,12 @@ class SyncBetweenTwoMachines(unittest.TestCase):
 
     def test_same_task_on_two_machines_forks_instead_of_merging(self):
         push(self.channel, tier=1, device="alpha", conn=self.a)
-        c = connect(os.path.join(self.tmp, "c.db"))
-        make_library(os.path.join(self.tmp, "c.db"), device="gamma")
         # the other machine archived the same source id under its own device
-        push(self.channel, tier=1, device="gamma", conn=c)
+        c, _ = make_library(os.path.join(self.tmp, "c.db"), device="gamma")
+        try:
+            push(self.channel, tier=1, device="gamma", conn=c)
+        finally:
+            c.close()
         pull(self.channel, tier=0, device="beta", conn=self.b)
         self.assertEqual(self.b.execute("SELECT COUNT(*) FROM session").fetchone()[0], 2)
 

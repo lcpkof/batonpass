@@ -333,12 +333,15 @@ def open_ro(path: Path):
     snapshot that is mid-write. Both are strictly read-only; neither can modify
     the source.
     """
+    conn = None
     try:
         conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2.0)
         conn.text_factory = lambda b: b.decode("utf-8", "replace")
         conn.execute("select 1").fetchone()
         return conn, "ro"
     except sqlite3.OperationalError:
+        if conn is not None:
+            conn.close()
         conn = sqlite3.connect(path.as_uri() + "?immutable=1", uri=True, timeout=2.0)
         conn.text_factory = lambda b: b.decode("utf-8", "replace")
         conn.execute("select 1").fetchone()

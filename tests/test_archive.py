@@ -10,6 +10,7 @@ exercise the actual adapter code rather than a mock of it.
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -56,6 +57,10 @@ class ArchiveTest(unittest.TestCase):
         self.src = os.path.join(self.tmp, "source.db")
         make_source(self.src)
         self.lib = connect(os.path.join(self.tmp, "library.db"))
+
+    def tearDown(self):
+        self.lib.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_source_is_never_written(self):
         before = (os.path.getsize(self.src), os.stat(self.src).st_mtime_ns)
