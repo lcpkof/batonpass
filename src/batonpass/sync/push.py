@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 
 from .. import __version__
 from ..store import redact
@@ -157,6 +158,7 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
     codecs = _Codecs(conn)
     stat = {"channel": channel, "channel_id": ckey, "device": device, "tier": tier,
             "sessions": 0, "sessions_sent": 0, "lines": {0: 0, 1: 0, 2: 0},
+            "events": 0,
             "blobs_new": 0, "blob_bytes": 0, "messages": 0, "parts": 0,
             "redacted": 0,
             "skipped": 0, "errors": []}
@@ -221,6 +223,15 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
         except Exception as exc:            # one bad session must not sink the push
             stat["errors"].append("%s: %s" % (sid, exc))
 
+    # The relay log rides along with the catalog, because it is the same kind
+    # of thing: immutable, content-hashed, safe to replay. Without it a claim
+    # made on this machine would never reach the other one, and two agents on
+    # two machines *would* both start working.
+    ev_buf, ev_top = _push_events(conn, ckey)
+    if ev_buf:
+        t0_buf.extend(ev_buf)
+        stat["events"] = len(ev_buf)
+
     for t, buf in ((0, t0_buf), (1, t1_buf), (2, t2_buf)):
         if not buf:
             continue
@@ -231,6 +242,9 @@ def push(channel: str, tier: int = 1, device: str = None, conn=None,
         comp = ch.compact(channel, device, name)
         if comp.get("compacted"):
             stat.setdefault("compacted", {})[name] = comp
+
+    if ev_buf:
+        _sync_put(conn, ckey, "sent_ev:" + device, ev_top)
 
     # Mark what we sent only after the bytes are on disk, and never a session
     # that raised — otherwise it would never be retried.
@@ -302,3 +316,41 @@ def _ship_blob(channel, codecs, source, sha, stat):
     _, wrote, is_new = wire.put_blob(channel, text)
     stat["blob_bytes"] += wrote
     stat["blobs_new"] += 1 if is_new else 0
+
+
+def _push_events(conn, ckey) -> tuple:
+    """This machine's own relay events, as stream lines.
+
+    Only events this machine wrote are sent: one that arrived by pull is
+    already on the other side, and echoing it would grow every stream by the
+    size of everyone else's history. The author is `ch.device_name()` — the
+    same name `relay` stamps on a claim — not whatever `--device` this push
+    happens to be labelled with.
+    """
+    device = ch.device_name()
+    try:
+        since = int(_sync_get(conn, ckey, "sent_ev:" + device, 0) or 0)
+    except (TypeError, ValueError):
+        since = 0
+    try:
+        rows = conn.execute(
+            "SELECT e.eid, e.tid, e.lamport, e.kind, e.body, e.refs_json, e.created_at,"
+            "       COALESCE(e.tool,'') tool, t.project_key, t.title"
+            "  FROM task_event e LEFT JOIN task t ON t.tid = e.tid"
+            " WHERE e.device=? AND e.lamport>? ORDER BY e.lamport, e.eid",
+            (device, since)).fetchall()
+    except sqlite3.OperationalError:            # a library from before the log
+        return [], since
+    out = []
+    for r in rows:
+        line = {"v": wire.WIRE_VERSION, "t": 3, "eid": r["eid"], "tid": r["tid"],
+                "dev": device, "lam": r["lamport"], "kind": r["kind"],
+                "ts": r["created_at"], "tool": r["tool"],
+                "pk": r["project_key"] or "", "title": r["title"] or ""}
+        if (r["body"] or "").strip():
+            line["b"] = r["body"]
+        if r["refs_json"]:
+            line["refs"] = json.loads(r["refs_json"])
+        out.append(line)
+    top = max([r["lamport"] for r in rows] + [since])
+    return out, top

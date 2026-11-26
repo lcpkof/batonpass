@@ -220,6 +220,8 @@ def dedupe_key(tier: str, obj: dict):
     per-message and per-part lines, so the key is the position they occupy —
     re-sending a message must not look like a second message.
     """
+    if obj.get("t") == 3:
+        return ("e", obj.get("eid"))       # a claim is its own key, in any stream
     if tier in ("t0", "t1"):
         return ("s", obj.get("sid"))
     if obj.get("k") == "p":

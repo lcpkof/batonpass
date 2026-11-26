@@ -35,12 +35,33 @@ SERVER_NAME = "batonpass"
 
 # ---------------------------------------------------------------- agents
 
-def mcp_server_entry():
-    """The command that starts the MCP server on this machine."""
+def mcp_server_entry(tool=None):
+    """The command that starts the MCP server on this machine.
+
+    `tool` names the client in the server's own environment, so a relay card
+    can say "alma is holding it" instead of "some mcp client is holding it".
+    The name is the client's, not the person's — it never leaves this machine.
+    """
     exe = shutil.which("batonpass")
-    if exe:
-        return {"command": exe, "args": ["mcp"]}
-    return {"command": sys.executable, "args": ["-m", "batonpass", "mcp"]}
+    entry = ({"command": exe, "args": ["mcp"]} if exe
+             else {"command": sys.executable, "args": ["-m", "batonpass", "mcp"]})
+    if tool:
+        entry["env"] = {"BATONPASS_TOOL": tool}
+    return entry
+
+
+def _slug(name):
+    return (name or "agent").strip().lower().replace(" ", "-")
+
+
+def _entry_is_current(path, entry) -> bool:
+    """True when the client already runs exactly this entry."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (data.get("mcpServers") or {}).get(SERVER_NAME) == entry
+    except (OSError, ValueError):
+        return False
 
 
 def _expand(p):
@@ -185,8 +206,10 @@ def run(db=None, channel=None, join=None, archive=True, index=True,
     _say('            "search my history for …"')
     _say("or here:")
     _say("            batonpass find \"half a sentence you remember\"")
+    _say("            batonpass places           # every folder, and which tools worked in it")
     _say("            batonpass tasks            # what is in flight, per project")
     _say("            batonpass resume --cwd .   # where this directory left off")
+    _say("            batonpass relay            # who has it, and what they did last")
     if not join and channel:
         _say("")
         _say("other machines:  batonpass setup --join %s" % channel)
@@ -198,17 +221,23 @@ def _agents(yes, ask):
     if not found:
         _say("agents      no MCP client found on this machine")
         return
-    todo = [(n, p) for n, p, have in found if not have]
+    # Same server everywhere, but each client introduces itself by name — a
+    # card that says "alma" is worth more than one that says "an mcp client",
+    # and a client already connected without that name is worth upgrading.
+    todo = []
+    for name, path, have in found:
+        entry = mcp_server_entry(_slug(name))
+        if not have or not _entry_is_current(path, entry):
+            todo.append((name, path, entry))
     if not todo:
         _say("agents      %s — all connected" % ", ".join(n for n, p, h in found))
         return
-    entry = mcp_server_entry()
-    names = ", ".join(n for n, p in todo)
+    names = ", ".join(n for n, p, e in todo)
     if not yes:
         if not ask("agents      connect %s? [Y/n] " % names):
             _say("agents      left alone — `batonpass setup` again when you want it")
             return
-    for name, path in todo:
+    for name, path, entry in todo:
         _say("agents      %-14s %s" % (name, register(path, entry)))
 
 

@@ -26,6 +26,7 @@ def connect(path=None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     for stmt in DDL:
         conn.execute(stmt)
+    _migrate(conn)
     stored = get_meta(conn, "schema_version")
     if stored is None:
         set_meta(conn, "schema_version", str(SCHEMA_VERSION))
@@ -35,6 +36,22 @@ def connect(path=None) -> sqlite3.Connection:
         set_meta(conn, "schema_version", str(SCHEMA_VERSION))
     conn.commit()
     return conn
+
+
+def _migrate(conn) -> None:
+    """Columns added after a table first shipped.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a new
+    column is the one upgrade that is not free. Each entry is a check plus an
+    ALTER, idempotent, and the list doubles as the honest history of the
+    schema. Nothing is dropped and nothing is rewritten.
+    """
+    for table, column, decl in (
+        ("task_event", "tool", "TEXT"),
+    ):
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+        if cols and column not in cols:
+            conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
 
 
 def source_ro(path):

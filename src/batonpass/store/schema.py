@@ -1,4 +1,4 @@
-"""Schema, version 2.
+"""Schema, version 3.
 
 raw_*   append-only compressed source payloads — the parser's undo button.
 content content-addressed plaintext, refcounted.
@@ -6,14 +6,18 @@ session/message/part   the canonical model, rebuildable from raw at any time.
 sync_state             local bookkeeping: how far this library has pushed/pulled.
 session_head           the summary layer, so a new machine is useful before it
                        has a single message row.
+place                  which tool calls which directory home. A tool's project
+                       list is not portable; its paths are.
 
-1 → 2 is additive: two new tables, no column changed, so the DDL alone upgrades
-an existing library and no migration pass is needed.
+Every upgrade so far has been additive — new tables, no column changed — so the
+DDL alone lifts an existing library and no migration pass is needed. That is
+cheap to keep and expensive to lose: the alternative is a migration path per
+version, and nobody ever tests the old one.
 """
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = [
     """
@@ -120,7 +124,8 @@ DDL = [
       kind       TEXT NOT NULL,
       body       TEXT,
       refs_json  TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      tool       TEXT
     )
     """,
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
@@ -147,6 +152,22 @@ DDL = [
       head_json   TEXT,
       msg_total   INTEGER DEFAULT 0,
       updated_at  TEXT
+    )
+    """,
+
+    # The registry that lets one project be seen from every tool. A row says
+    # "this tool calls that directory a workspace" — nothing is inferred, and a
+    # tool that has no opinion about directories simply has no rows.
+    """
+    CREATE TABLE IF NOT EXISTS place (
+      path     TEXT NOT NULL,
+      tool     TEXT NOT NULL,
+      ref      TEXT NOT NULL DEFAULT '',
+      label    TEXT,
+      sessions INTEGER DEFAULT 0,
+      last_at  TEXT,
+      seen_at  TEXT,
+      PRIMARY KEY (path, tool, ref)
     )
     """,
 ]

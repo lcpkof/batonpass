@@ -28,6 +28,8 @@ batonpass index                        # local search index, ~17 s per 700 sessi
 batonpass find "岗位表" --at 7d           # search it, with time windows
 batonpass tasks                        # every project, one line each
 batonpass resume                       # handover card for the directory you are in
+batonpass places                       # every folder, and which tools worked in it
+batonpass relay                        # who has the baton here, and what they did last
 ```
 
 ---
@@ -157,6 +159,63 @@ picking one silently and losing the other.
 
 ---
 
+## The same folder, seen from every tool
+
+Every tool has its own idea of a project, and none of those ideas travel. Alma keeps
+workspaces in a sqlite table, dsh in one `workspace.json` per instance, zcode only in
+whatever directory you happened to launch it from. You cannot join them on a "project
+list" — there isn't one to join.
+
+So the join is the one thing all of them agree on: **the absolute path**.
+
+```
+PROJECT                    TOOLS   SESS  LAST           PATH
+ai-agent-memory-continuity alma       1  刚刚           ~/Documents/Alma/2026-11-25/ai-agent-memory-continuity
+luocp                      dsh       93  11-25 19:30    ~/luocp
+gp                         zcode     48  11-18 12:11    ~/Documents/GP
+```
+
+A directory is in that list because some tool named it — never because we guessed it, and
+never because we synthesised a path from a project id. A tool with no opinion about
+directories simply has no rows. Scratch folders that no tool can put a name to stay out
+of the way unless you ask for them (`--all`).
+
+Once two tools can see one folder, one of them can hand it over:
+
+```
+batonpass relay                                            # who has it, and what the other side did
+batonpass relay --take --note "先把 dsh 的目录并进来"
+batonpass relay --next "把 MCP 两个新工具接上"
+batonpass relay --done
+```
+
+The baton is not stored anywhere. It is computed from an append-only log:
+
+- every event is content-hashed, so writing the same note twice writes it once;
+- a claim carries a Lamport number; the highest number holds the baton;
+- two claims at the same number are **both kept** and resolved by `(device, event id)` —
+  arbitrary, but *identical on every machine*, so two agents that never talk still agree;
+- the log rides the sync channel alongside the catalog (an event is immutable and
+  content-hashed, which is the one thing a shared folder carries without a merge rule),
+  so "every machine" includes the one that was asleep;
+- the loser is not deleted. The card says "claimed at the same moment", because that is
+  what happened;
+- `done` / `release` free the baton and do **not** promote the runner-up — nobody inherits
+  an obligation they never accepted;
+- a `done` retires the plan written before it (whoever wrote it is the one who finished
+  it), while a `release` leaves that plan standing for whoever picks the work up.
+
+And `resume` answers the one question a card cannot: is the folder occupied *right now*.
+
+```
+⚠ dsh 正在这个目录里干活（4 分钟前，设备 c8806d63a6c9），说：「我来写 UI」 — 先 relay 再动手
+```
+
+That line exists because the expensive failure is not forgetting what you did. It is two
+agents doing the same hour of work in the same directory, and finding out afterwards.
+
+---
+
 ## Status
 
 | verb | state |
@@ -168,8 +227,10 @@ picking one silently and losing the other.
 | `index` · `find` | **shipped** — FTS5 trigram over everything you typed, with time windows |
 | `tasks` · `card` · `resume` | **shipped** — the handover packet, from a project name or a directory |
 | `sync compact` | **shipped** — a re-pushed stream collapses back to one line per fact |
+| `places` | **shipped** — one project = one path; every tool's workspaces merged by folder |
+| `relay` | **shipped** — append-only claims + Lamport order; the baton is computed, never stored |
 | `doctor` | **shipped** — every "why doesn't it work" turned into one line you can act on |
-| `mcp` | **shipped** — `memory_search` · `memory_add` · `resume` over stdio, for AI tools |
+| `mcp` | **shipped** — `memory_search` · `memory_add` · `resume` · `places` · `relay` over stdio |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 

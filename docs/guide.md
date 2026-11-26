@@ -177,8 +177,9 @@ batonpass sync init ~/Nutstore/batonpass --encrypt
 batonpass mcp          # 在 stdio 上说 MCP，客户端自己起，退出后就没了
 ```
 
-三个工具：`memory_search`（用模糊概念找）、`memory_add`（把刚学到的记下来，会出现在交接卡的"备注"里）、
-`resume`（把接力棒交给你）。配到 Claude Code / Cursor 的 MCP 配置里：
+五个工具：`memory_search`（用模糊概念找）、`memory_add`（把刚学到的记下来，会出现在交接卡的"备注"里）、
+`resume`（把接力棒交给你）、`places`（这个人在哪些目录干过活，哪个工具干过）、
+`relay`（谁正拿着这条线；`take`/`note`/`next`/`done` 顺手就能写）。配到 Claude Code / Cursor 的 MCP 配置里：
 
 ```json
 {"mcpServers": {"batonpass": {"command": "uvx", "args": ["batonpass", "mcp"]}}}
@@ -196,6 +197,31 @@ batonpass mcp          # 在 stdio 上说 MCP，客户端自己起，退出后�
 - 任务状态 → 按时间+设备取最新一条，标出"这是 Mac mini 10-28 更新的"
 
 **看得见的分叉能处理，静默的丢数据不能。** 这是刻意的取舍。
+
+### 同一台机器上，两个工具干同一件事
+
+Alma、dsh、zcode 各有各的"项目"概念，谁也不认谁的。能对上的只有一个东西：**绝对路径**。
+
+```bash
+batonpass places                 # 一个目录一行，标明哪些工具在里面干过
+batonpass places --shared        # 只看两家以上工具都碰过的
+batonpass relay                  # 这个目录谁拿着、另一侧上次做到哪
+batonpass relay --take --note "先把 dsh 的目录并进来"
+batonpass relay --next "把 MCP 两个新工具接上"
+batonpass relay --done           # 收工，把棒放下
+```
+
+棒不存任何地方，是从事件日志里算出来的：事件只追加、带 Lamport 号，号大的持有；
+同号的两次接手**两条都留着**，按 `(设备, 事件 id)` 定胜负——随便定的规则，但每台机器算出来
+一样，所以两个从不通信的 agent 也不会各干一份。输的那条不删，卡片上写"同一时刻也有人接了"。
+
+接力记录会跟着 `batonpass sync push` 走（t0 流），所以另一台机器拉一次就知道棒在谁手上——
+两台机器不需要互相通信，也不需要谁当裁判。
+
+`--done` 会把之前写的「下一步」一起作废（写它的人就是做完它的人），所以卡片不会拿一件已经做完的
+事当计划递给下一个人；`--release` 相反，那是「没干完就放下了」，那条下一步留给接的人。
+
+`batonpass resume` 会多一行，回答卡片答不了的那个问题——**这个目录现在有没有人正在里面干活**。
 
 ---
 
@@ -231,3 +257,4 @@ rm -rf ~/.batonpass          # 删库（源文件从头到尾没被动过）
 **A 档：30 秒，零风险，先看报告。**
 **B 档：5 分钟、约 400 MB 磁盘、一次性 10 分钟 CPU，换一个能全文搜的永久档案。**
 **C 档：再加 2 分钟和一个共享目录，换"换机器不用重新解释"这件事。**
+**同一目录两个工具：零配置，`batonpass relay` 就够——换工具不用重新解释。**

@@ -546,11 +546,32 @@ class Alma:
 
     @staticmethod
     def sessions(conn):
+        # A thread only carries a `workspace_id`; the directory lives one table
+        # away. Resolving it here is what lets an Alma session line up with the
+        # same project seen from dsh or zcode — otherwise every Alma project is
+        # a random id and nothing can ever be handed across.
+        from ..identity import project as pj
+
+        paths = {}
+        if "workspaces" in tables(conn):
+            try:
+                for w in conn.execute("SELECT id, path, name FROM workspaces"):
+                    if w["path"]:
+                        paths[str(w["id"])] = w["path"]
+            except sqlite3.OperationalError:
+                paths = {}                 # an older Alma without that column
+
         for r in conn.execute("SELECT * FROM chat_threads ORDER BY created_at"):
             d = rowdict(r)
-            yield dict(source_sid=str(d.get("id")), title=d.get("title"), cwd=None,
+            wid = d.get("workspace_id")
+            cwd = paths.get(str(wid)) if wid else None
+            if cwd:
+                key, tier, _ = pj.derive(cwd, "", None)
+            else:
+                key, tier = (str(wid) if wid else None), 2
+            yield dict(source_sid=str(d.get("id")), title=d.get("title"), cwd=cwd,
                        created_at=_ts(d.get("created_at")), updated_at=_ts(d.get("updated_at")),
-                       project_key=d.get("workspace_id"), project_key_tier=2,
+                       project_key=key, project_key_tier=tier,
                        forked_from=d.get("parent_thread_id"), artifact_refs=None)
 
     @staticmethod

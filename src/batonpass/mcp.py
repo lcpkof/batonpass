@@ -1,17 +1,18 @@
-"""A small MCP server: three tools, because recall needs three verbs.
+"""A small MCP server: five tools, and no more.
 
 An agent does not need a hundred endpoints. It needs to *look something up*
-(`memory_search`), to *write down what it just learned* (`memory_add`), and to
-*be handed the baton* (`resume`). Everything else is a CLI subcommand, which is
-the right shape for a human and the wrong shape for a model.
+(`memory_search`), to *write down what it just learned* (`memory_add`), to *be
+handed the baton* (`resume`), to *see where the work lives* (`places`), and to
+*say it is taking it this time* (`relay`). Everything else is a CLI subcommand,
+which is the right shape for a human and the wrong shape for a model.
 
 The transport is the standard one: newline-delimited JSON-RPC 2.0 on stdin and
 stdout. No daemon, no port, no background process — the client starts this, and
 when it exits there is nothing left running. Paths and ports are exactly the
 things that break on a machine you just sat down at.
 
-`memory_add` is the only tool that writes, and it appends an event. It never
-rewrites history and never touches anyone else's data.
+`memory_add` and `relay` are the only tools that write, and both append an
+event. Neither rewrites history, and neither touches anyone else's data.
 """
 
 from __future__ import annotations
@@ -88,6 +89,52 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "places",
+        "description": (
+            "Every directory the person works in, with all the tools that ever "
+            "touched it (alma, dsh, zcode …), merged by path. Use it when you need "
+            "to know where the work actually lives, or which projects are shared "
+            "between tools — a project with two tools in it is one you can hand over."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "shared": {"type": "boolean", "default": False,
+                           "description": "only places two or more tools have worked in"},
+                "all": {"type": "boolean", "default": False,
+                        "description": "include scratch directories with no project name"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    },
+    {
+        "name": "relay",
+        "description": (
+            "Who has the baton in this project right now, and what the other tools "
+            "last did there. Call it bare to read; pass take/note/next/done to write. "
+            "`take` claims the project before you start so a second agent in the same "
+            "folder does not duplicate the work. Claims are append-only events, so "
+            "concurrent claims are kept and resolved deterministically, never lost."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string",
+                            "description": "project path or name; defaults to the cwd"},
+                "take": {"type": "boolean",
+                         "description": "claim the baton before working"},
+                "note": {"type": "string",
+                         "description": "one line about what you did or decided"},
+                "next": {"type": "string", "description": "the next concrete step"},
+                "done": {"type": "boolean", "description": "finish and free the baton"},
+                "release": {"type": "boolean",
+                            "description": "put it down unfinished, handing it back"},
+                "tool": {"type": "string",
+                         "description": "your name here (defaults to BATONPASS_TOOL)"},
+            },
+        },
+    },
 ]
 
 
@@ -116,7 +163,15 @@ def _project_key(conn, hint) -> str:
         if key:
             return key
     hits = tk.resolve(conn, hint)
-    return hits[0]["project_key"] if hits else ""
+    if hits:
+        return hits[0]["project_key"]
+    # Not in the library yet, but some tool calls that directory a workspace:
+    # the registry still knows the name, so an agent can work there first and
+    # sort out the archive later.
+    from . import places
+    places.refresh(conn)
+    ph = places.find(conn, hint)
+    return ph[0]["project_key"] if ph else ""
 
 
 def tool_search(conn, args) -> str:
@@ -149,11 +204,21 @@ def tool_search(conn, args) -> str:
     return "\n".join(out)
 
 
-def tool_add(conn, args) -> str:
-    from .identity import artifacts as af  # noqa: F401  (keeps ver constant importable)
+def _ensure_task(conn, key: str) -> str:
+    from .identity import project as pj
     from .identity import tasks as tk
-    from .sync.channel import device_name
-    from .store.db import set_meta
+
+    tid = tk.task_id(key)
+    conn.execute(
+        "INSERT OR IGNORE INTO task(tid,project_key,title,created_at) VALUES(?,?,?,?)",
+        (tid, key, pj.display(key), tk._now_iso()),
+    )
+    conn.commit()
+    return tid
+
+
+def tool_add(conn, args) -> str:
+    from .identity import baton
 
     text = _need(args, "text")
     kind = (args.get("kind") or "note").strip() or "note"
@@ -161,36 +226,88 @@ def tool_add(conn, args) -> str:
     if not key:
         return ("cannot record that: no project matches %r. Pass the project directory "
                 "or name, or run from it." % (args.get("project") or "the cwd"))
-    tid = tk.task_id(key)
-    conn.execute(
-        "INSERT OR IGNORE INTO task(tid,project_key,title,created_at) VALUES(?,?,?,?)",
-        (tid, key, key, tk._now_iso()),
-    )
-    lamport = conn.execute(
-        "SELECT COALESCE(MAX(lamport),0)+1 FROM task_event WHERE tid=?", (tid,)
-    ).fetchone()[0]
-    import hashlib
-    eid = hashlib.sha256(("%s|%s|%s" % (tid, lamport, text)).encode("utf-8")).hexdigest()[:32]
-    conn.execute(
-        "INSERT OR IGNORE INTO task_event(eid,tid,device,lamport,kind,body,refs_json,created_at)"
-        " VALUES(?,?,?,?,?,?,?,?)",
-        (eid, tid, device_name(), lamport, kind, text, None, tk._now_iso()),
-    )
-    conn.commit()
-    return "recorded %s for %s (event %s)" % (kind, key, eid[:8])
+    tid = _ensure_task(conn, key)
+    out = baton.append(conn, tid, kind, text)
+    if out.get("duplicate"):
+        return "already recorded for %s — nothing added" % key
+    return "recorded %s for %s (event %s)" % (kind, key, (out["eid"] or "")[:8])
+
+
+def tool_places(conn, args) -> str:
+    """Every directory any tool calls a workspace, merged by the path."""
+    from . import places
+
+    places.refresh(conn)
+    rows = places.merged(conn)
+    if args.get("shared"):
+        rows = [r for r in rows if len(r["tools"]) > 1]
+    if not args.get("all"):
+        rows = [r for r in rows if r["project_key"]]
+    rows = rows[:int(args.get("limit") or 20)]
+    if not rows:
+        return "no places registered yet — run `batonpass archive` once."
+    out = ["%s · %s · %d 会话 · %s · %s" % (
+        r["label"], "+".join(r["tools"]), r["sessions"], (r["last_at"] or "")[:16],
+        r["path"]) for r in rows]
+    return "\n".join(out)
+
+
+def tool_relay(conn, args) -> str:
+    """Read the baton card, or write to it — one tool, because an agent that can
+    read the room should be able to claim it in the same breath."""
+    from . import places
+    from .identity import baton
+
+    key = _project_key(conn, args.get("project"))
+    if not key:
+        return ("no place matches %r — pass a directory or run from it"
+                % (args.get("project") or "the cwd"))
+    tid = _ensure_task(conn, key)
+    tool = (args.get("tool") or baton.tool_name()).strip()
+
+    wrote = []
+    note = (args.get("note") or "").strip()
+    if args.get("take"):
+        r = baton.take(conn, tid, tool=tool, note=note)
+        wrote.append("claimed" + (" (already)" if r.get("duplicate") else ""))
+        note = ""
+    for field, kind in (("note", "note"), ("next", "next")):
+        text = note if field == "note" else (args.get(field) or "").strip()
+        if text:
+            r = baton.append(conn, tid, kind, text, tool=tool)
+            wrote.append(kind + (" (already)" if r.get("duplicate") else ""))
+    for field, kind in (("done", "done"), ("release", "release")):
+        if args.get(field):
+            baton.append(conn, tid, kind, "", tool=tool)
+            wrote.append(kind)
+
+    places.refresh(conn)
+    place = None
+    for r in places.merged(conn):
+        if r["project_key"] == key:
+            place = r
+            break
+    body = baton.render(conn, key, place, tool=tool)
+    if wrote:
+        return "wrote: %s\n\n%s" % (" · ".join(wrote), body)
+    return body
 
 
 def tool_resume(conn, args) -> str:
+    from .identity import baton
     from .identity import tasks as tk
 
     key = _project_key(conn, args.get("project"))
     if not key:
         return ("nothing to hand over: no project matches %r. Try memory_search first."
                 % (args.get("project") or "the cwd"))
-    return tk.card(conn, key, int(args.get("sessions") or 4))
+    body = tk.card(conn, key, int(args.get("sessions") or 4))
+    held = baton.warn(conn, key)
+    return body + ("\n\n" + held if held else "")
 
 
-_HANDLERS = {"memory_search": tool_search, "memory_add": tool_add, "resume": tool_resume}
+_HANDLERS = {"memory_search": tool_search, "memory_add": tool_add, "resume": tool_resume,
+             "places": tool_places, "relay": tool_relay}
 
 
 def handle(conn, method: str, params: dict):

@@ -8,6 +8,7 @@ leaves exactly the rows the first import left.
 
 from __future__ import annotations
 
+import json
 import os
 
 from ..store.content import Codec, get_dict, put_content
@@ -134,6 +135,11 @@ def pull(channel: str, tier: int = 0, device: str = None, conn=None,
                 stat["gen_changed"] = stat.get("gen_changed", 0) + 1
             stat["bad_lines"] += bad
             for o in rows:
+                if o.get("t") == 3:
+                    if sid_prefix:
+                        continue       # a filtered pull is about one session
+                    _put_event(conn, o, stat)
+                    continue
                 sid = o.get("sid")
                 if sid_prefix and not (sid or "").startswith(sid_prefix):
                     continue
@@ -186,3 +192,31 @@ def _apply_t2(conn, channel, codecs, o, stat):
 def _source_of(conn, sid) -> str:
     row = conn.execute("SELECT source FROM session WHERE sid=?", (sid,)).fetchone()
     return row[0] if row else ""
+
+
+def _put_event(conn, o, stat):
+    """One relay event arriving from another machine.
+
+    Append-only and content-hashed, so an event that is already here is simply
+    the same event — nothing to reconcile and nothing to overwrite. The task row
+    comes along too: a machine that never opened this project still has to be
+    able to render the card.
+    """
+    eid, tid = o.get("eid"), o.get("tid")
+    if not eid or not tid:
+        stat["bad_lines"] += 1
+        return
+    pk = o.get("pk") or ""
+    if pk:
+        conn.execute(
+            "INSERT OR IGNORE INTO task(tid,project_key,title,created_at) VALUES(?,?,?,?)",
+            (tid, pk, o.get("title") or pk, o.get("ts") or ""))
+    refs = o.get("refs")
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO task_event(eid,tid,device,lamport,kind,body,refs_json,"
+        "created_at,tool) VALUES(?,?,?,?,?,?,?,?,?)",
+        (eid, tid, o.get("dev") or "", int(o.get("lam") or 0), o.get("kind") or "note",
+         o.get("b") or "", json.dumps(refs, ensure_ascii=False) if refs else None,
+         o.get("ts") or "", o.get("tool") or ""))
+    if cur.rowcount:
+        stat["events_new"] = stat.get("events_new", 0) + 1

@@ -68,6 +68,19 @@ def cmd_archive(args):
     t = out["totals"]
     print("\n%d sessions, %d messages, %d parts, %d new rows" % (
         t["sessions"], t["messages"], t["parts"], t["new_rows"]))
+    # Archiving is the moment the tool directories are freshly known, so the
+    # place registry is refreshed here rather than on a timer nobody starts.
+    from . import places
+    from .store.db import connect
+    conn = connect(args.db)
+    try:
+        n = 0 if args.dry_run else places.refresh(conn)
+        if not args.json and not args.dry_run:
+            print("%d place(s) registered — `batonpass places` to see them" % n)
+    except Exception as e:                     # a listing must never fail an archive
+        print("places: skipped (%s)" % e)
+    finally:
+        conn.close()
     return 0 if not any(s["errors"] for s in out["sources"]) else 1
 
 
@@ -248,6 +261,9 @@ def cmd_sync(args):
                 st["lines"][0], st["lines"][1], st["lines"][2]))
         if st["tier"] >= 2:
             print("  %d messages, %d parts" % (st["messages"], st["parts"]))
+        if st.get("events"):
+            print("  %d relay event(s) — who took the baton on this machine"
+                  % st["events"])
         print("  blobs: %d new, %s" % (st["blobs_new"], _fmt_bytes(st["blob_bytes"])))
         if st.get("redacted"):
             print("  %d credential(s) replaced with <redacted> in the summaries"
@@ -271,6 +287,9 @@ def cmd_sync(args):
     print("  devices seen: %s" % (", ".join(st["devices"]) or "none"))
     print("  %d sessions seen · %d new · %d summaries" % (
         st["sessions_seen"], st["sessions_new"], st["heads"]))
+    if st.get("events_new"):
+        print("  %d relay event(s) arrived — `batonpass relay` shows who has it now"
+              % st["events_new"])
     if st["tier"] >= 2:
         print("  %d new messages · %d new parts · %d blobs materialised" % (
             st["messages_new"], st["parts_new"], st["blobs_new"]))
@@ -388,17 +407,34 @@ def cmd_resume(args):
     from .store.db import connect
     import os
     conn = connect(args.db)
-    cwd = args.cwd or os.getcwd()
+    # `--cwd .` has to mean the same project as running from there, otherwise
+    # the answer depends on how the question was phrased.
+    cwd = os.path.abspath(args.cwd or os.getcwd())
     if args.hint:
         from .identity import card, resolve
+        from .identity import baton
         hits = resolve(conn, args.hint)
-        print(card(conn, hits[0]["project_key"], args.sessions) if hits
-              else "no project matches %r" % args.hint)
-        return 0 if hits else 1
+        if not hits:
+            print("no project matches %r" % args.hint)
+            return 1
+        key = hits[0]["project_key"]
+        print(card(conn, key, args.sessions))
+        # The card says what happened. Only the log can say whether the folder
+        # is occupied right now, which is the part that wastes an afternoon.
+        held = baton.warn(conn, key)
+        if held:
+            print("\n" + held)
+        return 0
+    from .identity import baton
     text = resume_hint(conn, cwd)
+    key = derive(cwd, "")[0]
+    # The card says what happened. Only the log can say whether the folder is
+    # occupied right now, and that is the part that wastes an afternoon.
+    held = baton.warn(conn, key)
     if not text:
-        key, _tier, _c = derive(cwd, "")
         print("nothing recorded for %s yet." % (display(key) if key else cwd))
+        if held:
+            print("\n" + held)
         rows = projects(conn)[:8]
         if rows:
             print("\nmost recent work elsewhere:")
@@ -407,7 +443,117 @@ def cmd_resume(args):
                                                     _when(p["last_at"])))
         return 1
     print(text)
+    if held:
+        print("\n" + held)
     return 0
+
+
+def _short_path(path):
+    home = os.path.expanduser("~")
+    return path.replace(home, "~", 1) if path.startswith(home) else path
+
+
+def cmd_places(args):
+    from . import places
+    from .identity import baton
+    from .identity.tasks import task_id
+    from .store.db import connect
+
+    conn = connect(args.db)
+    try:
+        places.refresh(conn)
+        everything = places.merged(conn)
+        rows = list(everything)
+        if args.shared:
+            rows = [r for r in rows if len(r["tools"]) > 1]
+        if not args.all:
+            # A directory no tool can put a name to is a scratch space, not a
+            # place you hand work between. Present, but not in the way.
+            rows = [r for r in rows if r["project_key"]]
+        for r in rows:
+            st = baton.state(conn, task_id(r["project_key"])) if r["project_key"] else {}
+            r["baton"] = (st.get("holder") or {}).get("tool") if st else None
+            r["next"] = st.get("next_step") if st else ""
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            if args.shared:
+                print("没有两家以上工具共用的目录。\n"
+                      "同一个目录只要被第二个工具打开过就会自己出现在这里 — "
+                      "现在一共 %d 个，去掉 --shared 看全部"
+                      % len([r for r in everything if r["project_key"]]))
+            else:
+                print("还没有登记任何目录 — 先跑一次 `batonpass archive`")
+            return 1
+        print("%-30s %-16s %4s  %-15s %-6s %s"
+              % ("PROJECT", "TOOLS", "SESS", "LAST", "BATON", "PATH"))
+        for r in rows[:args.limit]:
+            print("%-30s %-16s %4s  %-15s %-6s %s" % (
+                (r.get("label") or "")[:30], "+".join(r["tools"])[:16],
+                r["sessions"], _when(r["last_at"]), r["baton"] or "—",
+                _short_path(r["path"])))
+        shared = sum(1 for r in rows if len(r["tools"]) > 1)
+        print("\n%d 个目录 · %d 个有两家以上工具做过 · `batonpass relay <名字>` 看接力"
+              % (len(rows), shared))
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_relay(args):
+    from . import places
+    from .identity import baton
+    from .identity import project as pj
+    from .identity.tasks import task_id
+    from .store.db import connect
+
+    conn = connect(args.db)
+    try:
+        places.refresh(conn)
+        hint = args.hint or os.getcwd()
+        hits = places.find(conn, hint)
+        place = hits[0] if hits else None
+        key = (place or {}).get("project_key") or ""
+        if not key:
+            key, _tier, _ = pj.derive(hint if "/" in hint else os.getcwd(), "", None)
+        if not key:
+            print("没有找到这个目录对应的工作：%s" % hint)
+            return 1
+        tid = task_id(key)
+        conn.execute(
+            "INSERT OR IGNORE INTO task(tid,project_key,title,created_at) VALUES(?,?,?,?)",
+            (tid, key, pj.display(key), baton._now()))
+        conn.commit()
+
+        wrote = []
+        note = (args.note or "").strip()
+        if args.take:
+            r = baton.take(conn, tid, tool=args.tool, note=note)
+            wrote.append("接手" + ("（重复，忽略）" if r.get("duplicate") else ""))
+            note = ""                       # the claim already carries it
+        for kind, text in (("note", note), ("next", (args.next or "").strip())):
+            if text:
+                r = baton.append(conn, tid, kind, text, tool=args.tool)
+                wrote.append(("笔记" if kind == "note" else "下一步")
+                             + ("（重复，忽略）" if r.get("duplicate") else ""))
+        for flag, kind in ((args.done, "done"), (args.release, "release")):
+            if flag:
+                baton.append(conn, tid, kind, "", tool=args.tool)
+                wrote.append("收工" if kind == "done" else "放下")
+
+        st = baton.state(conn, tid)
+        if args.json:
+            print(json.dumps({"place": place, "state": st}, ensure_ascii=False, indent=2))
+            return 0
+        if wrote:
+            print("已记录：" + " · ".join(wrote) + "\n")
+        print(baton.render(conn, key, place, tool=args.tool))
+        if place is None:
+            print("\n（这个目录还没在任何工具的工作区里登记过 — 只有接力记录）")
+        return 0
+    finally:
+        conn.close()
 
 
 def cmd_identity(args):
@@ -490,7 +636,7 @@ def build_parser():
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_stats)
 
-    m = sub.add_parser("mcp", help="run the MCP server on stdio (three tools)")
+    m = sub.add_parser("mcp", help="run the MCP server on stdio (five tools)")
     m.add_argument("--db", default=None)
     m.set_defaults(func=cmd_mcp)
 
@@ -581,6 +727,27 @@ def build_parser():
     r.add_argument("--sessions", type=int, default=4)
     r.add_argument("--db", default=None)
     r.set_defaults(func=cmd_resume)
+
+    pl = sub.add_parser("places", help="every directory any tool calls a workspace, merged by path")
+    pl.add_argument("--shared", action="store_true", help="only places two or more tools touched")
+    pl.add_argument("--all", action="store_true", help="include directories with no project name")
+    pl.add_argument("--limit", type=int, default=40)
+    pl.add_argument("--db", default=None)
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_places)
+
+    rl = sub.add_parser("relay", help="who has the baton in this directory, and what is next")
+    rl.add_argument("hint", nargs="?", default=None,
+                    help="a path or a name fragment; defaults to the current directory")
+    rl.add_argument("--take", action="store_true", help="claim the baton before working")
+    rl.add_argument("--note", default=None, help="append a note (one line, your words)")
+    rl.add_argument("--next", default=None, help="append the next step")
+    rl.add_argument("--done", action="store_true", help="finish, and free the baton")
+    rl.add_argument("--release", action="store_true", help="put the baton down unfinished")
+    rl.add_argument("--tool", default=None, help="who you are (alma, dsh, claude, codex …)")
+    rl.add_argument("--db", default=None)
+    rl.add_argument("--json", action="store_true")
+    rl.set_defaults(func=cmd_relay)
 
     n = sub.add_parser("identity", help="recompute project identity and artifacts")
     n.add_argument("--db", default=None)

@@ -72,7 +72,8 @@ class McpSurface(unittest.TestCase):
         self.assertEqual(len(got), 2)                 # the notification gets no reply
         self.assertEqual(got[0]["result"]["protocolVersion"], mcp.PROTOCOL)
         names = [t["name"] for t in got[1]["result"]["tools"]]
-        self.assertEqual(names, ["memory_search", "memory_add", "resume"])
+        self.assertEqual(names, ["memory_search", "memory_add", "resume",
+                                 "places", "relay"])
 
     def test_search_finds_what_is_there_and_says_so(self):
         r = call(1, "memory_search", {"query": "资料箱"}, self.db)
