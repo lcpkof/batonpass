@@ -65,6 +65,13 @@ def breakdown(conn) -> dict:
                     "SELECT source, COUNT(*) n FROM session GROUP BY source"))]
     per_tool.sort(key=lambda t: t["prose"] + t["tool_io"], reverse=True)
 
+    # Bodies that were moved out on purpose. They are not on disk, so they are
+    # not part of any row above — but leaving them out of the report makes a
+    # slimmed library look like it never had that history.
+    archived = _one(conn, "SELECT COALESCE(SUM(byte_len),0) FROM content"
+                          " WHERE codec='purged'")
+    purged_blobs = _one(conn, "SELECT COUNT(*) FROM content WHERE codec='purged'")
+
     catalog = max(total - content - index, 0)
     part_pages = sum(v for k, v in pages.items() if k.startswith("part"))
     msg_pages = sum(v for k, v in pages.items() if k.startswith("message"))
@@ -79,8 +86,10 @@ def breakdown(conn) -> dict:
             "sessions": _one(conn, "SELECT COUNT(*) FROM session"),
             "messages": _one(conn, "SELECT COUNT(*) FROM message"),
             "parts": _one(conn, "SELECT COUNT(*) FROM part"),
+            "calls": _one(conn, "SELECT COALESCE(SUM(COALESCE(n,1)),0) FROM part"),
             "blobs": _one(conn, "SELECT COUNT(*) FROM content"),
         },
+        "archived": {"plain": archived, "blobs": purged_blobs},
         "per_tool": per_tool,
     }
 
@@ -89,9 +98,9 @@ def report(conn) -> str:
     b = breakdown(conn)
     f = lambda n: "%.0f MB" % (n / MB) if n >= MB else "%.0f KB" % (n / 1024.0)
     pct = lambda n: 100.0 * n / b["file"] if b["file"] else 0
-    lines = ["库 %s · %d 个会话 · %d 条消息 · %d 次工具调用" % (
+    lines = ["库 %s · %d 个会话 · %d 条消息 · %d 次工具调用（占 %d 行）" % (
         f(b["file"]), b["counts"]["sessions"], b["counts"]["messages"],
-        b["counts"]["parts"]), ""]
+        b["counts"]["calls"], b["counts"]["parts"]), ""]
     rows = [
         ("正文", b["prose"]["stored"], "说的话，换台机器也换不回来"),
         ("工具输入输出", b["tool_io"]["stored"], "可复现，通常是最大的一笔"),
@@ -110,8 +119,12 @@ def report(conn) -> str:
     for t in b["per_tool"]:
         lines.append("%-12s %8d %10s %10s" % (t["tool"], t["sessions"],
                                              f(t["prose"]), f(t["tool_io"])))
+    if b["archived"]["blobs"]:
+        lines.append("")
+        lines.append("已移出正文 %d 块（%s）：行还在、指针还在，正文回原库读，"
+                     % (b["archived"]["blobs"], f(b["archived"]["plain"])))
+        lines.append("  `batonpass fetch <会话>` 或 `--all` 取回来")
     lines.append("")
-    save_tool = b["tool_io"]["stored"]
-    lines.append("可省的一笔：工具输入输出只留最近 30 天，更早的按需从源库读，")
-    lines.append("  一句话都不删，省约 %s（%.0f%%）" % (f(save_tool), pct(save_tool)))
+    lines.append("看看还能省多少：`batonpass slim --dry-run`（什么都不动，只报数）")
+    lines.append("  正文一个字都不删；动的是工具输入输出 / 推理过程，加 --vacuum 才真变小")
     return "\n".join(lines)

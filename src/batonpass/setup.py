@@ -211,6 +211,7 @@ def run(db=None, channel=None, join=None, archive=True, index=True,
     _say("            batonpass resume --cwd .   # where this directory left off")
     _say("            batonpass relay            # who has it, and what they did last")
     _say("            batonpass serve            # all of it, in a browser window")
+    _say("            batonpass slim --dry-run   # what fixing the disk size would give back")
     if not join and channel:
         _say("")
         _say("other machines:  batonpass setup --join %s" % channel)

@@ -48,6 +48,7 @@ def _migrate(conn) -> None:
     """
     for table, column, decl in (
         ("task_event", "tool", "TEXT"),
+        ("part", "n", "INTEGER NOT NULL DEFAULT 1"),
     ):
         cols = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}
         if cols and column not in cols:

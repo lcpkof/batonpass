@@ -23,7 +23,7 @@ import sqlite3
 
 from .. import __version__
 from ..store import redact
-from ..store.content import Codec, get_content, get_dict
+from ..store.content import Codec, get_content, get_dict, is_purged
 from ..store.text import clean
 from ..store.write import message_key, part_key
 from . import channel as ch
@@ -290,9 +290,14 @@ def _push_messages(conn, ckey, channel, codecs, sid, source, buf, stat) -> int:
         _ship_blob(channel, codecs, source, m[2], stat)
         mid = message_key(sid, m[0])
         for p in conn.execute(
-            "SELECT seq,kind,name,args_sha,result_sha,is_error,ts FROM part"
-            " WHERE mid=? ORDER BY seq", (mid,)
+            "SELECT seq,kind,name,args_sha,result_sha,is_error,ts,COALESCE(n,1) AS n"
+            " FROM part WHERE mid=? ORDER BY seq", (mid,)
         ):
+            if p[7] > 1:
+                # A folded row stands for calls whose text this machine chose not
+                # to keep. Shipping the pointer would ship an empty call.
+                stat["folded_skipped"] = stat.get("folded_skipped", 0) + 1
+                continue
             buf.append({
                 "v": wire.WIRE_VERSION, "t": 2, "k": "p", "mid": mid, "sid": sid,
                 "seq": p[0], "pk": p[1], "nm": p[2], "ah": p[3], "rh": p[4],
@@ -306,6 +311,11 @@ def _push_messages(conn, ckey, channel, codecs, sid, source, buf, stat) -> int:
 
 def _ship_blob(channel, codecs, source, sha, stat):
     if not sha or wire.has_blob(channel, sha):
+        return
+    if is_purged(codecs.conn, sha):
+        # Slimmed away on purpose: the peer gets the pointer and no body, which
+        # is the same deal this machine has. Counted, never silent.
+        stat["archived"] = stat.get("archived", 0) + 1
         return
     try:
         text = codecs.text(source, sha)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from ..store.content import Codec, get_content, get_dict
+from ..store.content import Codec, get_content, get_dict, is_purged
 from ..store.db import connect
 
 
@@ -21,21 +21,34 @@ def export_session(sid, db=None, as_json=True):
             raise SystemExit("no session matching %r" % sid)
         codec = Codec(get_dict(conn, row["source"]))
         msgs = []
+        archived = 0
         for m in conn.execute("SELECT * FROM message WHERE sid=? ORDER BY seq", (row["sid"],)):
             parts = []
             for p in conn.execute("SELECT * FROM part WHERE mid=? ORDER BY seq", (m["mid"],)):
-                parts.append({
+                # A slimmed pointer exports as an empty side plus `archived`, so a
+                # diff against the source shows a gap instead of a lie.
+                gone = (is_purged(conn, p["args_sha"]) or is_purged(conn, p["result_sha"])
+                        or (int(p["n"] or 1) > 1 and not (p["args_sha"] or p["result_sha"])))
+                archived += 1 if gone else 0
+                d = {
                     "kind": p["kind"], "name": p["name"],
                     "args": get_content(conn, p["args_sha"], codec) or None,
                     "result": get_content(conn, p["result_sha"], codec) or None,
                     "is_error": bool(p["is_error"]), "ts": p["ts"],
-                })
+                }
+                if int(p["n"] or 1) > 1:
+                    d["n"] = int(p["n"])
+                if gone:
+                    d["archived"] = True
+                parts.append(d)
             msgs.append({"seq": m["seq"], "role": m["role"], "ts": m["ts"],
                          "text": get_content(conn, m["text_sha"], codec), "parts": parts})
         doc = {"sid": row["sid"], "source": row["source"], "source_sid": row["source_sid"],
                "device": row["device"], "title": row["title"], "cwd": row["cwd"],
                "created_at": row["created_at"], "updated_at": row["updated_at"],
                "messages": msgs}
+        if archived:
+            doc["archived_parts"] = archived
     finally:
         conn.close()
     if as_json:
@@ -46,8 +59,12 @@ def export_session(sid, db=None, as_json=True):
         if m["text"]:
             lines.append(m["text"])
         for p in m["parts"]:
-            lines.append("  [%s %s] %s" % (p["kind"], p["name"] or "",
-                                           (p["result"] or p["args"] or "").strip()[:400]))
+            n = (" ×%d" % p["n"]) if p.get("n") else ""
+            body = (p["result"] or p["args"] or "").strip()[:400]
+            lines.append("  [%s %s%s] %s" % (p["kind"], p["name"] or "", n,
+                                             body if body else
+                                             ("(正文已归档，batonpass fetch %s)" % doc["sid"]
+                                              if p.get("archived") else "")))
     return "\n".join(lines)
 
 

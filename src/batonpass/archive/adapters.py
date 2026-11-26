@@ -175,7 +175,7 @@ def _ingest(conn_lib, result, codec, source, device, src_conn, sessions, message
             try:
                 tsha = ""
                 if text:
-                    tsha, was_new = put_content(conn_lib, text, codec)
+                    tsha, was_new = put_content(conn_lib, text, codec, plain=True)
                     if was_new:
                         result.bytes_stored += len(text.encode())
                 if put_message(conn_lib, mid, sid, seq, m.get("role") or "unknown",

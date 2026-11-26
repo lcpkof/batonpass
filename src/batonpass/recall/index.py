@@ -14,11 +14,17 @@ from __future__ import annotations
 
 import json
 
-from ..store.codecs import Codecs
 from ..store.text import clean
 
-FTS_VER = "1"
-MAX_DOC_CHARS = 8000      # one pasted stack trace should not eat the disk
+FTS_VER = "3"
+# Only titles live in the trigram index now. Message bodies used to be indexed
+# here too, at 8000 chars each, and on a 70k-doc library that came to 213 MB of
+# index for 14 MB of text — a trigram index over Chinese prose costs ~15 bytes
+# per character, because nearly every trigram is unique to its document. Capping
+# the document did not help (the mean message is 245 chars). So bodies are
+# searched where they are stored, with a LIKE over plain TEXT, and this index
+# keeps the one list that has to be fast and small: what sessions are called.
+TITLE_MAX = 240
 
 
 def _fts_ddl():
@@ -44,21 +50,22 @@ def ensure(conn) -> None:
 
 def _clip(text: str) -> str:
     text = clean(text or "")
-    if len(text) <= MAX_DOC_CHARS:
-        return text
-    head = MAX_DOC_CHARS * 2 // 3
-    return text[:head] + "\n…\n" + text[-MAX_DOC_CHARS // 3:]
+    return text if len(text) <= TITLE_MAX else text[:TITLE_MAX] + "…"
 
 
 def build(conn, force: bool = False, limit: int = None, progress=None) -> dict:
     ensure(conn)
-    codecs = Codecs(conn)
     if force:
-        conn.execute("DELETE FROM search_fts")
+        # DROP, not DELETE: FTS5 keeps deleted segments in its shadow b-tree
+        # until an optimize, and on a 219 MB index neither DELETE nor VACUUM
+        # gave a single page back. Dropping the virtual table takes its shadow
+        # tables with it, and then the space is really gone.
+        conn.execute("DROP TABLE IF EXISTS search_fts")
         conn.execute("DELETE FROM search_state")
         conn.commit()
+        ensure(conn)
 
-    stats = {"docs": 0, "sessions": 0, "skipped": 0}
+    stats = {"docs": 0, "sessions": 0}
     sessions = conn.execute(
         "SELECT sid, source, title, project_key FROM session").fetchall()
     for s in sessions:
@@ -77,26 +84,16 @@ def build(conn, force: bool = False, limit: int = None, progress=None) -> dict:
             conn.execute(
                 "INSERT INTO search_fts(body,sid,ref,kind,ts) VALUES(?,?,?,?,?)",
                 (_clip(label), sid, sid, "title", ""))
+            stats["docs"] += 1
 
-        rows = conn.execute(
-            """SELECT mid, seq, role, text_sha, ts FROM message
-                WHERE sid=? AND seq>? AND role IN ('user','assistant','unknown')
-                ORDER BY seq LIMIT ?""",
-            (sid, last, limit or -1),
-        ).fetchall()
-        for r in rows:
-            body = _clip(codecs.get(r["text_sha"], source))
-            if body.strip():
-                conn.execute(
-                    "INSERT INTO search_fts(body,sid,ref,kind,ts) VALUES(?,?,?,?,?)",
-                    (body, sid, r["mid"], r["role"], r["ts"] or ""))
-                stats["docs"] += 1
-            else:
-                stats["skipped"] += 1
+        # The watermark still advances — `stale()` and `doctor` read it — but
+        # there are no body docs to write any more.
+        last_seq = conn.execute(
+            "SELECT COALESCE(MAX(seq),-1) FROM message WHERE sid=?", (sid,)).fetchone()[0]
         conn.execute(
             "INSERT INTO search_state(sid,last_seq,ver) VALUES(?,?,?) "
             "ON CONFLICT(sid) DO UPDATE SET last_seq=excluded.last_seq, ver=excluded.ver",
-            (sid, rows[-1]["seq"] if rows else last, FTS_VER))
+            (sid, last_seq, FTS_VER))
         stats["sessions"] += 1
         if progress and stats["sessions"] % 100 == 0:
             progress(stats)

@@ -145,17 +145,44 @@ def sniff_and_decode(blob: bytes) -> tuple[bytes, str]:
 
 # ── storage ─────────────────────────────────────────────────────
 
-def put_content(conn: sqlite3.Connection, text, codec: Codec) -> tuple[str, bool]:
-    """Store text once, bumping refcount on repeats. Returns (sha, was_new)."""
+PURGED = "purged"
+PLAIN = "none"   # the codec name a body already carries when we store it as-is
+
+
+def _plain_ok(text) -> bool:
+    return isinstance(text, str)
+
+
+def put_content(conn: sqlite3.Connection, text, codec: Codec,
+                plain: bool = False) -> tuple[str, bool]:
+    """Store text once, bumping refcount on repeats. Returns (sha, was_new).
+
+    `plain=True` skips compression and keeps the body as TEXT. Prose is stored
+    that way on purpose: it is the one thing a search has to read from end to
+    end, and decoding seventy thousand small frames costs more than the 20 MB
+    the compression saves (measured: 1.7 s per query against 0.1 s). Tool I/O
+    is the opposite — huge, rarely read back — so it stays compressed.
+
+    A row whose body was purged keeps its sha and its byte_len — the pointer is
+    still valid, the text is simply not here. Writing the same text again is
+    therefore not a no-op: it revives the body, which is why re-archiving a
+    source quietly undoes a slim run without any special "restore" path.
+    """
     if text is None:
         return "", False
     data = text.encode("utf-8", "replace") if isinstance(text, str) else bytes(text)
     sha = sha256_bytes(data)
-    row = conn.execute("SELECT 1 FROM content WHERE sha256=?", (sha,)).fetchone()
+    keep = data.decode("utf-8", "replace") if (plain and _plain_ok(text)) else None
+    row = conn.execute("SELECT codec FROM content WHERE sha256=?", (sha,)).fetchone()
     if row:
-        conn.execute("UPDATE content SET refcount=refcount+1 WHERE sha256=?", (sha,))
+        if row["codec"] != PURGED:
+            conn.execute("UPDATE content SET refcount=refcount+1 WHERE sha256=?", (sha,))
+            return sha, False
+        body, cname = (keep, PLAIN) if keep is not None else codec.compress(data)
+        conn.execute("UPDATE content SET body=?,codec=?,refcount=refcount+1 WHERE sha256=?",
+                     (body, cname, sha))
         return sha, False
-    body, cname = codec.compress(data)
+    body, cname = (keep, PLAIN) if keep is not None else codec.compress(data)
     conn.execute("INSERT INTO content(sha256,byte_len,refcount,codec,body) VALUES(?,?,?,?,?)",
                  (sha, len(data), 1, cname, body))
     return sha, True
@@ -165,9 +192,22 @@ def get_content(conn: sqlite3.Connection, sha: str, codec: Codec) -> str:
     if not sha:
         return ""
     row = conn.execute("SELECT body,codec FROM content WHERE sha256=?", (sha,)).fetchone()
-    if row is None:
+    if row is None or row["codec"] == PURGED:
         return ""
+    if row["codec"] == PLAIN:
+        # Stored as TEXT so SQLite itself can substring-match it; a pulled or
+        # older row may still be bytes under the same codec name.
+        body = row["body"]
+        return body if isinstance(body, str) else body.decode("utf-8", "replace")
     return codec.decompress(row["body"], row["codec"]).decode("utf-8", "replace")
+
+
+def is_purged(conn: sqlite3.Connection, sha: str) -> bool:
+    """True when the pointer is real but the text was moved out on purpose."""
+    if not sha:
+        return False
+    row = conn.execute("SELECT codec FROM content WHERE sha256=?", (sha,)).fetchone()
+    return bool(row) and row["codec"] == PURGED
 
 
 def get_dict(conn, adapter: str):
@@ -184,3 +224,35 @@ def get_dict(conn, adapter: str):
 def save_dict(conn, adapter: str, data: bytes) -> None:
     from .db import set_meta
     set_meta(conn, "dict:" + adapter, data.hex())
+
+
+def plain_prose(conn, codecs, dry_run: bool = False) -> dict:
+    """Rewrite compressed prose as TEXT, in place, keeping every pointer.
+
+    Search reads prose from end to end on every query. While it was zstd
+    frames, that meant seventy thousand small decodes per search (1.7 s here);
+    as TEXT it is one SQLite LIKE (0.1 s) for about 20 MB more on disk. The
+    sha, the byte_len and the refcount do not move, so nothing else notices.
+    """
+    rows = conn.execute(
+        """SELECT c.sha256 sha, c.body body, c.codec codec, c.byte_len byte_len,
+                  MIN(s.source) src
+             FROM content c JOIN message m ON m.text_sha=c.sha256
+             JOIN session s ON s.sid=m.sid
+            WHERE c.codec NOT IN (?, ?) AND c.byte_len > 0
+            GROUP BY c.sha256""", (PURGED, PLAIN)).fetchall()
+    out = {"rows": 0, "skipped": 0, "bytes": 0}
+    for r in rows:
+        try:
+            text = codecs.for_source(r["src"]).decompress(r["body"], r["codec"])
+        except Exception:
+            out["skipped"] += 1          # unreadable blob: leave it exactly as it is
+            continue
+        out["rows"] += 1
+        out["bytes"] += max(len(text) - len(r["body"]), 0)
+        if not dry_run:
+            conn.execute("UPDATE content SET body=?, codec=? WHERE sha256=?",
+                         (text.decode("utf-8", "replace"), PLAIN, r["sha"]))
+    if not dry_run:
+        conn.commit()
+    return out

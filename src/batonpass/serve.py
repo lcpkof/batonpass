@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .store.codecs import Codecs
+from .store.content import is_purged
 from .store.db import connect
 
 DEFAULT_PORT = 7629
@@ -99,12 +100,19 @@ def transcript(conn, sid, offset=0, limit=MAX_MESSAGES) -> dict:
               (sid, limit, offset))
     # One row per (message, kind, name) beats one row per tool call: a session
     # with 867 `run_code` calls is one chip, not 867 lines of noise.
+    # `n` is folded: one row can stand for 37 calls, and the count is the honest
+    # one. `arch` says how many of those calls have no body left here — the page
+    # can then say so instead of drawing an empty result and looking broken.
     chips = {}
-    for p in _q(conn, """SELECT p.mid, p.kind, p.name, COUNT(*) n
+    purged = "SELECT sha256 FROM content WHERE codec='purged'"
+    for p in _q(conn, """SELECT p.mid, p.kind, p.name, SUM(COALESCE(p.n,1)) n,
+                                SUM(CASE WHEN p.args_sha IN (%s) OR p.result_sha IN (%s)
+                                         THEN 1 ELSE 0 END) arch
                            FROM part p JOIN message m ON m.mid=p.mid
-                          WHERE m.sid=? GROUP BY p.mid, p.kind, p.name""", (sid,)):
+                          WHERE m.sid=? GROUP BY p.mid, p.kind, p.name"""
+                  % (purged, purged), (sid,)):
         chips.setdefault(p["mid"], []).append(
-            {"kind": p["kind"], "name": p["name"] or "", "n": p["n"]})
+            {"kind": p["kind"], "name": p["name"] or "", "n": p["n"], "arch": p["arch"]})
     out = []
     for m in msgs:
         text = codecs.get(m["text_sha"], source)
@@ -120,29 +128,19 @@ def transcript(conn, sid, offset=0, limit=MAX_MESSAGES) -> dict:
 
 
 def search(conn, q, limit=40) -> dict:
+    """Same ranking as `batonpass find`, so the window and the terminal agree.
+
+    The body half of it is a LIKE over plain-text prose now, not a trigram index
+    — see recall/index.py for why the index was the wrong place to keep it.
+    """
     if not q.strip():
         return {"q": q, "hits": []}
+    from .recall.query import search as recall_search
     hits = []
-    try:
-        for r in _q(conn, """
-            SELECT sid, ref, kind, ts,
-                   snippet(search_fts, 0, '«', '»', '…', 14) snip
-              FROM search_fts WHERE search_fts MATCH ? ORDER BY rank LIMIT ?""",
-                    ('"%s"' % q.replace('"', '""'), limit)):
-            hits.append(dict(r))
-    except Exception:
-        hits = []
-    if not hits:  # a query shorter than the trigram needs, or punctuation
-        for r in _q(conn, """
-            SELECT sid, ref, kind, ts, substr(body, 1, 240) snip
-              FROM search_fts WHERE body LIKE ? LIMIT ?""", ("%%%s%%" % q, limit)):
-            hits.append(dict(r))
-    for h in hits:
-        s = conn.execute("SELECT source, device, cwd, title FROM session WHERE sid=?",
-                         (h["sid"],)).fetchone()
-        if s:
-            h.update(tool=s["source"], device=s["device"], path=s["cwd"] or "",
-                     title=s["title"] or "")
+    for h in recall_search(conn, q, limit=limit):
+        hits.append({"sid": h["sid"], "ref": h["sid"], "kind": "", "ts": h["snippet_at"],
+                     "snip": h["snippet"], "title": h["title"], "tool": h["source"],
+                     "device": h["device"], "path": h["project"]})
     return {"q": q, "hits": hits}
 
 
@@ -155,7 +153,11 @@ def session_parts(conn, mid) -> dict:
     out = []
     for p in _q(conn, "SELECT * FROM part WHERE mid=? ORDER BY seq", (mid,)):
         out.append({"kind": p["kind"], "name": p["name"] or "",
+                    "n": int(p["n"] or 1),
                     "is_error": bool(p["is_error"]),
+                    "archived": not (p["args_sha"] or p["result_sha"])
+                                or is_purged(conn, p["args_sha"])
+                                or is_purged(conn, p["result_sha"]),
                     "args": codecs.get(p["args_sha"], row["source"])[:4000],
                     "result": codecs.get(p["result_sha"], row["source"])[:4000]})
     return {"mid": mid, "parts": out}
@@ -251,6 +253,7 @@ main{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 53px)}
 .chip{background:var(--chip);border:1px solid transparent;border-radius:999px;padding:3px 10px;
       font-size:12px;color:var(--mut);cursor:pointer;white-space:nowrap}
 .chip.on{border-color:var(--acc);color:var(--acc)}
+.tc.arch{color:var(--muted);border:1px dashed var(--line)}
 .row{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
 .row:hover{background:var(--card)}
 .row.on{background:var(--card);box-shadow:inset 2px 0 0 var(--acc)}
@@ -345,7 +348,7 @@ async function open(sid, offset){
       <div class="h"><span class="role ${m.role}">${m.role}</span><span>${fmt(m.ts)}</span></div>
       ${m.text?`<div class="body">${esc(m.text)}</div>`:""}
       ${m.chips.length?`<div class="chips">${m.chips.map(c=>
-        `<button class="tc" data-mid="${esc(m.mid||"")}">${esc(c.name||c.kind)} ×${c.n}</button>`).join("")}</div>`:""}
+        `<button class="tc${c.arch?" arch":""}" data-mid="${esc(m.mid||"")}"${c.arch?' title="正文已归档，batonpass fetch 可取回"':""}>${esc(c.name||c.kind)} ×${c.n}${c.arch?" ↺":""}</button>`).join("")}</div>`:""}
     </div>`).join("");
   $("#detail").innerHTML = `
     <div class="hdr"><h2>${esc(s.title||s.sid)}</h2>

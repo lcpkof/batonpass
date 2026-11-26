@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
+from ..store.codecs import Codecs
+
 RRF_K = 60
 SNIPPET_CHARS = 220
 
@@ -87,9 +89,58 @@ def _like(term: str) -> str:
     return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
-def _fts_phrase(q: str) -> str:
-    """Trigram MATCH wants a plain phrase; the user's punctuation is not syntax."""
-    return '"%s"' % q.replace('"', " ")
+def _body_hits(conn, q: str, allowed: set, limit: int = 60) -> tuple[list, dict]:
+    """Sessions that mention `q` in prose, plus the first snippet seen.
+
+    Prose is stored as plain TEXT, so this is one SQLite LIKE — the scan happens
+    in C. Libraries that still hold compressed prose (pulled from a peer, or
+    never slimmed) are covered by a decode-and-scan fallback that only runs when
+    such rows exist at all.
+    """
+    like = _like(q)
+    rows = conn.execute(
+        """SELECT m.sid sid, COUNT(*) n, MAX(m.ts) ts
+             FROM message m JOIN content c ON c.sha256=m.text_sha
+            WHERE c.codec='none' AND c.body LIKE ? ESCAPE '\\'
+            GROUP BY m.sid ORDER BY n DESC, ts DESC LIMIT ?""", (like, limit)).fetchall()
+    sids = [r["sid"] for r in rows if r["sid"] in allowed]
+    snips = {}
+
+    packed = conn.execute(
+        """SELECT 1 FROM message m JOIN content c ON c.sha256=m.text_sha
+            WHERE c.codec NOT IN ('none','purged') LIMIT 1""").fetchone()
+    if packed:
+        codecs = Codecs(conn)
+        sources = {r["sid"]: r["source"] for r in conn.execute("SELECT sid, source FROM session")}
+        counts = {}
+        for r in conn.execute(
+                """SELECT sid, ts, text_sha FROM message
+                    WHERE text_sha IS NOT NULL AND text_sha<>''
+                    ORDER BY sid, seq"""):
+            if r["sid"] not in allowed:
+                continue
+            text = codecs.get(r["text_sha"], sources.get(r["sid"]))
+            idx = text.lower().find(q.lower())
+            if idx < 0:
+                continue
+            counts[r["sid"]] = counts.get(r["sid"], 0) + text.lower().count(q.lower())
+            if r["sid"] not in snips:
+                snips[r["sid"]] = (r["ts"] or "", _snippet(text, q))
+        for sid, n in counts.items():
+            if sid not in sids:
+                sids.append(sid)
+
+    for sid in sids:
+        if sid in snips:
+            continue
+        r = conn.execute(
+            """SELECT c.body body, m.ts ts FROM message m JOIN content c ON c.sha256=m.text_sha
+                WHERE m.sid=? AND c.codec='none' AND c.body LIKE ? ESCAPE '\\'
+                ORDER BY m.seq LIMIT 1""", (sid, like)).fetchone()
+        if r:
+            snips[sid] = (r["ts"] or "", _snippet(r["body"] if isinstance(r["body"], str)
+                                                 else r["body"].decode("utf-8", "replace"), q))
+    return sids[:limit], snips
 
 
 def _snippet(body: str, q: str) -> str:
@@ -126,6 +177,8 @@ def search(conn, q: str, at: str = None, project: str = None, device: str = None
     q = (q or "").strip()
     if len(q) < 2:
         return []
+    from .index import ensure
+    ensure(conn)          # the title list is the one part that needs the table
     clauses, cargs = _session_filters(at, project, device)
     allowed = {r["sid"] for r in conn.execute(
         "SELECT sid FROM session WHERE 1=1" + clauses, cargs)}
@@ -149,18 +202,8 @@ def search(conn, q: str, at: str = None, project: str = None, device: str = None
         "ORDER BY COALESCE(updated_at,'') DESC LIMIT 40", (_like(q),)).fetchall()
     lists["file"] = [r["sid"] for r in rows]
     # ④ it was only ever mentioned in passing
-    if len(q) >= 3:
-        try:
-            rows = conn.execute(
-                "SELECT sid FROM search_fts WHERE kind<>'title' AND search_fts MATCH ? "
-                "ORDER BY rank LIMIT 60", (_fts_phrase(q),)).fetchall()
-        except Exception:
-            rows = []
-    else:
-        rows = conn.execute(
-            "SELECT sid FROM search_fts WHERE kind<>'title' AND body LIKE ? ESCAPE '\\' "
-            "ORDER BY rank LIMIT 60", (_like(q),)).fetchall()
-    lists["body"] = [r["sid"] for r in rows]
+    body_sids, body_snips = _body_hits(conn, q, allowed)
+    lists["body"] = body_sids
 
     scores, why = {}, {}
     for name, sids in lists.items():
@@ -183,20 +226,11 @@ def search(conn, q: str, at: str = None, project: str = None, device: str = None
                       msg_count FROM session WHERE sid=?""", (sid,)).fetchone()
         if s is None:
             continue
-        body, ts = "", ""
-        try:
-            r = conn.execute(
-                "SELECT body, ts FROM search_fts WHERE sid=? AND kind<>'title' "
-                "AND search_fts MATCH ? ORDER BY rank LIMIT 1",
-                (sid, _fts_phrase(q))).fetchone()
-            if r:
-                body, ts = r["body"], r["ts"] or ""
-        except Exception:
-            pass
-        if not body:
+        ts, snippet = body_snips.get(sid, ("", ""))
+        if not snippet:
             r = conn.execute("SELECT body FROM search_fts WHERE sid=? AND kind='title' LIMIT 1",
                              (sid,)).fetchone()
-            body = r["body"] if r else ""
+            snippet = _snippet(r["body"] if r else "", q)
         item = {
             "sid": sid,
             "title": (s["title"] or "").strip(),
@@ -205,7 +239,7 @@ def search(conn, q: str, at: str = None, project: str = None, device: str = None
             "source": s["source"] or "",
             "updated_at": s["updated_at"] or "",
             "score": round(score, 5),
-            "snippet": _snippet(body, q),
+            "snippet": snippet,
             "snippet_at": ts,
             "messages": s["msg_count"] or 0,
         }

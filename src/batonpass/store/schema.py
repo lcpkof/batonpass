@@ -1,4 +1,4 @@
-"""Schema, version 3.
+"""Schema, version 4.
 
 raw_*   append-only compressed source payloads — the parser's undo button.
 content content-addressed plaintext, refcounted.
@@ -9,6 +9,10 @@ session_head           the summary layer, so a new machine is useful before it
 place                  which tool calls which directory home. A tool's project
                        list is not portable; its paths are.
 
+`part.n` is how many identical consecutive calls one row stands for: after a
+slim run the bodies are gone and 37 reasoning rows are worth no more than the
+number 37, so they become one row that says so.
+
 Every upgrade so far has been additive — new tables, no column changed — so the
 DDL alone lifts an existing library and no migration pass is needed. That is
 cheap to keep and expensive to lose: the alternative is a migration path per
@@ -17,7 +21,7 @@ version, and nobody ever tests the old one.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DDL = [
     """
@@ -102,6 +106,7 @@ DDL = [
       result_sha TEXT,
       is_error   INTEGER DEFAULT 0,
       ts         TEXT,
+      n          INTEGER NOT NULL DEFAULT 1,
       UNIQUE(mid, seq)
     )
     """,

@@ -32,6 +32,9 @@ batonpass places                       # every folder, and which tools worked in
 batonpass relay                        # who has the baton here, and what they did last
 batonpass serve                        # every tool's history in one browser window
 batonpass size                         # what the library weighs, line by line
+batonpass slim --dry-run               # what a slim run would give back (changes nothing)
+batonpass slim --days 7 --vacuum       # give the disk back, keep the pointer
+batonpass fetch <session>              # need the detail again? re-read it from the tool
 ```
 
 ---
@@ -235,6 +238,8 @@ agents doing the same hour of work in the same directory, and finding out afterw
 | `mcp` | **shipped** — `memory_search` · `memory_add` · `resume` · `places` · `relay` over stdio |
 | `serve` | **shipped** — every tool, every machine, one read-only page in the browser |
 | `size` | **shipped** — the library split into prose · tool I/O · index · catalog, so the trade is visible |
+| `slim` | **shipped** — drop reproducible bodies outside a window, fold runs of identical calls, keep every pointer |
+| `fetch` | **shipped** — the other half of `slim`: re-read a session from the tool's own database |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 
@@ -275,6 +280,50 @@ The ungrouped 558 are the point. Every one of them had a session title that look
 like a project name ("这道题我做错了，帮我讲讲"), and promoting those produced 400
 clusters of one — structure that was pure invention. They stay searchable; they are just
 not lied about.
+
+## The disk, and what a pointer is worth
+
+A library of 725 sessions is 716 MB, and only 12% of it is anything you would miss.
+`size` says so; `slim` does something about it:
+
+```
+716.6 MB  →  365.3 MB     one run, 18 s (--days 7 --vacuum)
+  156,669 bodies emptied   224 MB   tool output and reasoning older than the window
+  461,720 rows → 238,878    the same call repeated 37 times is now one row that says 37
+  219,002 identity hashes   21 MB   a hash of a row in somebody else's database
+  166 MB of index  →  360 KB  titles only; bodies are searched where they are stored
+  prose +23 MB              stored as plain TEXT, one LIKE instead of 70,000 decodes
+```
+
+Nothing is deleted. A body that leaves is `content.codec='purged'`: the row, the sha and
+the byte length stay, so every pointer still resolves and `find` still says a message
+exists — it just cannot quote it. `batonpass fetch <session>` re-reads that session from
+the tool's own database and puts it back (8,401 bodies, 4 s, verified byte-identical).
+Prose is never a candidate: `message.text_sha` is the irreplaceable tier.
+
+Two findings worth keeping, because both were guesses that tested false:
+
+* **Capping body documents does not fix a trigram index.** 60,284 docs at 800 chars still
+  came to 213 MB of `search_fts_data` for 14 MB of text — Chinese prose makes nearly every
+  trigram unique to its document, so the index costs ~15× the text. Truncation moved it
+  from 213 MB to 213 MB.
+* **Decoding is the expensive part, not scanning.** A full decode-and-scan of 59,720
+  messages costs 1.7 s; the same scan over plain TEXT costs 0.2 s. So prose is stored
+  uncompressed (cheaper at the point of use, +23 MB on disk) and the index keeps the one
+  list that must be fast: what sessions are called.
+
+The window is a price list, not a policy — `slim --dry-run` prices it before you spend:
+
+```
+--days 1   221.8 MB     --days 7   131.5 MB     --days 30   33.4 MB
+--days 3   169.6 MB     --days 14   57.0 MB     --days 90    7.8 MB
+```
+
+Across machines the same rule holds. A peer is sent folded rows as one row (`n`) and
+purged bodies as a pointer with no body, counted as `archived` — it does not get a copy of
+bytes it could re-read from the tool itself. That is the answer to "don't copy the file,
+read the directory": for a place one machine can read, `raw_source.path` *is* the copy,
+and `fetch` is how you go back to it.
 
 `sync`, measured the same way — a real 713-session library, a channel folder, and a
 second library that has never seen any of those apps:

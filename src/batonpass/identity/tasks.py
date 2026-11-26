@@ -268,7 +268,7 @@ def sessions_of(conn, project_key: str, limit: int = 8) -> list:
 
 def tool_histogram(conn, sid: str, top: int = 5) -> list:
     rows = conn.execute(
-        """SELECT p.name, COUNT(*) n FROM part p JOIN message m ON m.mid=p.mid
+        """SELECT p.name, SUM(COALESCE(p.n,1)) n FROM part p JOIN message m ON m.mid=p.mid
             WHERE m.sid=? AND p.kind='tool_call' AND p.name IS NOT NULL
             GROUP BY LOWER(p.name) ORDER BY n DESC LIMIT ?""",
         (sid, top),

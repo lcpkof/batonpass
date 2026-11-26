@@ -754,6 +754,32 @@ def build_parser():
     sz.add_argument("--json", action="store_true")
     sz.set_defaults(func=cmd_size)
 
+    sl = sub.add_parser("slim", help="give disk back: keep the pointers, drop the old tool I/O")
+    sl.add_argument("--days", type=float, default=30,
+                    help="how long a tool result / reasoning body stays hot (default 30)")
+    sl.add_argument("--tool-days", type=float, default=None, help="window for tool_call/tool_result")
+    sl.add_argument("--reasoning-days", type=float, default=None, help="window for reasoning")
+    sl.add_argument("--no-purge", action="store_true", help="only fold rows, never drop a body")
+    sl.add_argument("--no-fold", action="store_true", help="keep one row per call")
+    sl.add_argument("--keep-packed", action="store_true",
+                    help="leave prose compressed (smaller file, 15x slower search)")
+    sl.add_argument("--keep-meta", action="store_true",
+                    help="keep the source identity hash copied into message.meta_json")
+    sl.add_argument("--vacuum", action="store_true", help="rewrite the file so the space is really gone")
+    sl.add_argument("--dry-run", action="store_true", help="say what would happen, change nothing")
+    sl.add_argument("--json", action="store_true")
+    sl.add_argument("--db", default=None)
+    sl.set_defaults(func=cmd_slim)
+
+    fe = sub.add_parser("fetch", help="re-read a slimmed session from the tool's own database")
+    fe.add_argument("session", nargs="?", help="session id (any prefix) — omit with --all")
+    fe.add_argument("--all", action="store_true", help="every session that has a pointer left")
+    fe.add_argument("--from", dest="source_path", default=None,
+                    help="where that tool's database lives, if it moved")
+    fe.add_argument("--json", action="store_true")
+    fe.add_argument("--db", default=None)
+    fe.set_defaults(func=cmd_fetch)
+
     sv = sub.add_parser("serve", help="open every tool's history in a browser window")
     sv.add_argument("--port", type=int, default=7629)
     sv.add_argument("--no-open", action="store_true", help="just print the URL")
@@ -778,6 +804,61 @@ def cmd_size(args):
         return 0
     print(report(conn))
     return 0
+
+
+def cmd_slim(args):
+    from .slim import apply, plan, report, savings
+    from .store.db import connect
+    import os
+    conn = connect(args.db)
+    tool_days = args.tool_days if args.tool_days is not None else args.days
+    reason_days = args.reasoning_days if args.reasoning_days is not None else args.days
+    p = plan(conn, tool_days=tool_days, reasoning_days=reason_days,
+             fold=not args.no_fold, meta=not args.keep_meta,
+             plain=not args.keep_packed)
+    if args.no_purge:
+        p["purge"] = {"blobs": 0, "plain_bytes": 0, "rows": 0, "shas": [],
+                      "kept_because_shared_with_prose":
+                          p["purge"]["kept_because_shared_with_prose"]}
+    save = savings(conn, p)
+    path = conn.execute("PRAGMA database_list").fetchone()["file"]
+    before = os.path.getsize(path) if path and os.path.exists(path) else 0
+    if args.json:
+        print(json.dumps({"plan": {k: v for k, v in p.items() if k != "purge"},
+                          "purge": {k: v for k, v in p["purge"].items() if k != "shas"},
+                          "savings": save, "file_bytes": before,
+                          "dry_run": bool(args.dry_run)}, ensure_ascii=False, indent=2))
+        return 0
+    if args.dry_run:
+        print(report(conn, p, save))
+        return 0
+    stats = apply(conn, p, vacuum=args.vacuum)
+    conn.commit()
+    after = os.path.getsize(path) if path and os.path.exists(path) else 0
+    print(report(conn, p, save, stats, dry=False))
+    print("  文件       %s -> %s（%s）" % (_fmt_bytes(before), _fmt_bytes(after), _fmt_bytes(before - after)
+                                        if after < before else "还没有回收"))
+    if not args.vacuum and after >= before:
+        print("  想真变少就加 --vacuum：删掉的空间现在还躺在文件里")
+    conn.close()
+    return 0
+
+
+def cmd_fetch(args):
+    from .rehydrate import fetch, report
+    from .store.db import connect
+    if not args.session and not args.all:
+        raise RuntimeError("给一个会话 id，或者 --all")
+    conn = connect(args.db)
+    try:
+        out = fetch(conn, args.session, path=args.source_path, everything=args.all)
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        else:
+            print(report(out))
+        return 0
+    finally:
+        conn.close()
 
 
 def cmd_serve(args):
