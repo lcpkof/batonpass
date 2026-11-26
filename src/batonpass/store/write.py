@@ -52,7 +52,37 @@ def upsert_session(conn, row: dict) -> bool:
          row.get("first_msg_at"), row.get("last_msg_at"), row.get("forked_from"),
          row.get("artifact_refs"), row.get("adapter_ver"), row.get("content_hash")),
     )
-    return cur.rowcount > 0
+    if cur.rowcount:
+        return True
+    _refresh_session(conn, row)
+    return False
+
+
+def _refresh_session(conn, row: dict):
+    """A session's identity is fixed; its size is not.
+
+    `INSERT OR IGNORE` alone freezes msg_count/last_msg_at at first sight, so a
+    conversation that grew overnight kept reporting its old length and its old
+    "last activity" — which is exactly what the handoff card and `tasks` show.
+    Nothing else about the row moves: sid, source, device and created_at stay.
+    """
+    old = conn.execute(
+        "SELECT first_msg_at,last_msg_at,msg_count FROM session WHERE sid=?",
+        (row.get("sid"),)).fetchone()
+    if old is None:
+        return
+    firsts = [x for x in (old[0], row.get("first_msg_at")) if x]
+    lasts = [x for x in (old[1], row.get("last_msg_at")) if x]
+    conn.execute(
+        "UPDATE session SET title=COALESCE(?,title), updated_at=COALESCE(?,updated_at),"
+        " msg_count=MAX(COALESCE(msg_count,0),?), first_msg_at=?, last_msg_at=?,"
+        " cwd=COALESCE(?,cwd), project_key=COALESCE(?,project_key),"
+        " content_hash=COALESCE(?,content_hash) WHERE sid=?",
+        (row.get("title"), row.get("updated_at"), row.get("msg_count") or 0,
+         min(firsts) if firsts else None, max(lasts) if lasts else None,
+         row.get("cwd"), row.get("project_key"), row.get("content_hash"),
+         row.get("sid")),
+    )
 
 
 def put_message(conn, mid, sid, seq, role, text_sha, model=None, ts=None, meta_json=None) -> bool:
