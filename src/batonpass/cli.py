@@ -749,6 +749,17 @@ def build_parser():
     rl.add_argument("--json", action="store_true")
     rl.set_defaults(func=cmd_relay)
 
+    sz = sub.add_parser("size", help="what the library weighs, line by line")
+    sz.add_argument("--db", default=None)
+    sz.add_argument("--json", action="store_true")
+    sz.set_defaults(func=cmd_size)
+
+    sv = sub.add_parser("serve", help="open every tool's history in a browser window")
+    sv.add_argument("--port", type=int, default=7629)
+    sv.add_argument("--no-open", action="store_true", help="just print the URL")
+    sv.add_argument("--db", default=None)
+    sv.set_defaults(func=cmd_serve)
+
     n = sub.add_parser("identity", help="recompute project identity and artifacts")
     n.add_argument("--db", default=None)
     n.add_argument("--no-artifacts", action="store_true")
@@ -756,6 +767,23 @@ def build_parser():
     n.add_argument("--json", action="store_true")
     n.set_defaults(func=cmd_identity)
     return p
+
+
+def cmd_size(args):
+    from .size import breakdown, report
+    from .store.db import connect
+    conn = connect(args.db)
+    if args.json:
+        print(json.dumps(breakdown(conn), ensure_ascii=False, indent=2))
+        return 0
+    print(report(conn))
+    return 0
+
+
+def cmd_serve(args):
+    from .serve import serve
+    return serve(db=args.db, port=args.port, open_browser=not args.no_open,
+                 quiet=True)
 
 
 def main(argv=None):

@@ -30,6 +30,8 @@ batonpass tasks                        # every project, one line each
 batonpass resume                       # handover card for the directory you are in
 batonpass places                       # every folder, and which tools worked in it
 batonpass relay                        # who has the baton here, and what they did last
+batonpass serve                        # every tool's history in one browser window
+batonpass size                         # what the library weighs, line by line
 ```
 
 ---
@@ -231,6 +233,8 @@ agents doing the same hour of work in the same directory, and finding out afterw
 | `relay` | **shipped** — append-only claims + Lamport order; the baton is computed, never stored |
 | `doctor` | **shipped** — every "why doesn't it work" turned into one line you can act on |
 | `mcp` | **shipped** — `memory_search` · `memory_add` · `resume` · `places` · `relay` over stdio |
+| `serve` | **shipped** — every tool, every machine, one read-only page in the browser |
+| `size` | **shipped** — the library split into prose · tool I/O · index · catalog, so the trade is visible |
 
 `archive`, measured end-to-end on this machine — all five sources, one pass:
 
